@@ -31,13 +31,11 @@ public sealed class EmailOutboxProcessor(
             try
             {
                 await sender.SendAsync(message, ct);
-                db.EmailMessages.Update(message with
-                {
-                    Sent = true,
-                    SentAt = DateTimeOffset.UtcNow,
-                    Attempts = message.Attempts + 1,
-                    LastError = null
-                });
+                var entry = db.Entry(message);
+                entry.Property(m => m.Sent).CurrentValue = true;
+                entry.Property(m => m.SentAt).CurrentValue = DateTimeOffset.UtcNow;
+                entry.Property(m => m.Attempts).CurrentValue = message.Attempts + 1;
+                entry.Property(m => m.LastError).CurrentValue = null;
                 delivered++;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -48,11 +46,9 @@ public sealed class EmailOutboxProcessor(
             {
                 logger.LogWarning(ex, "Delivery of outbox message {MessageId} failed (attempt {Attempt})",
                     message.Id, message.Attempts + 1);
-                db.EmailMessages.Update(message with
-                {
-                    Attempts = message.Attempts + 1,
-                    LastError = ex.Message
-                });
+                var entry = db.Entry(message);
+                entry.Property(m => m.Attempts).CurrentValue = message.Attempts + 1;
+                entry.Property(m => m.LastError).CurrentValue = ex.Message;
             }
         }
 

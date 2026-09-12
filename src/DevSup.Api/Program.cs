@@ -266,12 +266,10 @@ app.MapGet("/api/auth/github/callback", async (
     }
     else
     {
-        db.OAuthTokens.Update(existingToken with
-        {
-            EncryptedAccessToken = encrypted,
-            Scope = tokenResult.Scope,
-            LinkedAt = DateTimeOffset.UtcNow
-        });
+        var tokenEntry = db.Entry(existingToken);
+        tokenEntry.Property(t => t.EncryptedAccessToken).CurrentValue = encrypted;
+        tokenEntry.Property(t => t.Scope).CurrentValue = tokenResult.Scope;
+        tokenEntry.Property(t => t.LinkedAt).CurrentValue = DateTimeOffset.UtcNow;
     }
 
     await db.SaveChangesAsync(ct);
