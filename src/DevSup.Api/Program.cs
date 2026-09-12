@@ -7,6 +7,7 @@ using DevSup.Core;
 using DevSup.Core.Models;
 using DevSup.Core.Services;
 using DevSup.Infrastructure.Persistence;
+using DevSup.Infrastructure.Email;
 using DevSup.Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -33,6 +34,33 @@ builder.Services.AddSingleton(jwtSettings);
 builder.Services.AddSingleton<JwtTokenIssuer>();
 builder.Services.AddSingleton<IPasswordHasherService, PasswordHasherService>();
 builder.Services.AddSingleton<IFailureClassifier, FailureClassifier>();
+
+var smtp = builder.Configuration.GetSection("Smtp").Get<SmtpSettings>() ?? new SmtpSettings();
+builder.Services.AddSingleton(smtp);
+builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+
+var emailOptions = new EmailWorkerOptions
+{
+    IntervalSeconds = int.TryParse(builder.Configuration["Emailing:IntervalSeconds"], out var interval) ? interval : 15,
+    BatchSize = int.TryParse(builder.Configuration["Emailing:BatchSize"], out var batch) ? batch : 25,
+    MaxAttempts = int.TryParse(builder.Configuration["Emailing:MaxAttempts"], out var attempts) ? attempts : 5
+};
+builder.Services.AddSingleton(emailOptions);
+builder.Services.AddScoped<EmailOutboxProcessor>(sp => new EmailOutboxProcessor(
+    sp.GetRequiredService<DevSupDbContext>(),
+    sp.GetRequiredService<IEmailSender>(),
+    sp.GetRequiredService<ILogger<EmailOutboxProcessor>>(),
+    emailOptions.MaxAttempts));
+builder.Services.AddHostedService<EmailOutboxWorker>();
+
+var dataProtectionKey = builder.Configuration["Security:DataProtectionKey"]
+    ?? "devsup-dev-only-data-protection-key-change-in-production";
+var keyProtector = new AesGcmKeyProtector(dataProtectionKey);
+builder.Services.AddSingleton<IKeyProtector>(keyProtector);
+
+var github = builder.Configuration.GetSection("GitHub").Get<GitHubAuthSettings>() ?? new GitHubAuthSettings();
+builder.Services.AddSingleton(github);
+builder.Services.AddHttpClient<IGitHubGateway, GitHubGateway>(client => client.Timeout = TimeSpan.FromSeconds(15));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -129,6 +157,127 @@ app.MapPost("/api/users/login", async (LoginRequest request, DevSupDbContext db,
 
     var (token, expiresAt) = issuer.Issue(user);
     return Results.Ok(new LoginResponse(token, expiresAt, new UserResponse(user.Id, user.Email, user.DisplayName)));
+});
+
+const string OAuthStateCookie = "devsup_oauth_state";
+
+app.MapGet("/api/auth/github/login", (HttpContext http, IGitHubGateway gateway, GitHubAuthSettings github) =>
+{
+    if (!github.IsConfigured)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+            detail: "GitHub OAuth is not configured. Set GitHub:ClientId and GitHub:ClientSecret.");
+    }
+
+    var state = Guid.NewGuid().ToString("N");
+    http.Response.Cookies.Append(OAuthStateCookie, state, new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        MaxAge = TimeSpan.FromMinutes(10)
+    });
+
+    return Results.Redirect(gateway.BuildAuthorizeUrl(state));
+});
+
+app.MapGet("/api/auth/github/callback", async (
+    string code,
+    string? state,
+    HttpContext http,
+    IGitHubGateway gateway,
+    GitHubAuthSettings github,
+    DevSupDbContext db,
+    IPasswordHasherService hasher,
+    JwtTokenIssuer issuer,
+    IKeyProtector protector,
+    CancellationToken ct) =>
+{
+    if (!github.IsConfigured)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+            detail: "GitHub OAuth is not configured.");
+    }
+
+    var expectedState = http.Request.Cookies[OAuthStateCookie];
+    if (string.IsNullOrWhiteSpace(state)
+        || expectedState is null
+        || !string.Equals(state, expectedState, StringComparison.Ordinal))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+            detail: "OAuth state mismatch — start the login flow again.");
+    }
+
+    http.Response.Cookies.Delete(OAuthStateCookie);
+    if (string.IsNullOrWhiteSpace(code))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Missing authorization code.");
+    }
+
+    GitHubTokenResult tokenResult;
+    GitHubProfile profile;
+    try
+    {
+        tokenResult = await gateway.ExchangeCodeAsync(code, ct);
+        profile = await gateway.GetProfileAsync(tokenResult.AccessToken, ct);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status502BadGateway,
+            detail: $"GitHub OAuth exchange failed: {ex.Message}");
+    }
+
+    if (string.IsNullOrWhiteSpace(profile.Email))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+            detail: "DevSup could not read an email from your GitHub profile. Confirm a public email on GitHub, then retry.");
+    }
+
+    var email = profile.Email.Trim().ToLowerInvariant();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
+
+    if (user is null)
+    {
+        user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = email,
+            DisplayName = profile.Name ?? profile.Login ?? email,
+            PasswordHash = hasher.Hash("github-oauth-" + Guid.NewGuid().ToString("N")),
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.Users.Add(user);
+    }
+
+    var encrypted = protector.Protect(tokenResult.AccessToken);
+    var existingToken = await db.OAuthTokens.FirstOrDefaultAsync(
+        o => o.UserId == user.Id && o.Provider == GitProvider.GitHub, ct);
+
+    if (existingToken is null)
+    {
+        db.OAuthTokens.Add(new OAuthToken
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            Provider = GitProvider.GitHub,
+            EncryptedAccessToken = encrypted,
+            Scope = tokenResult.Scope,
+            LinkedAt = DateTimeOffset.UtcNow
+        });
+    }
+    else
+    {
+        db.OAuthTokens.Update(existingToken with
+        {
+            EncryptedAccessToken = encrypted,
+            Scope = tokenResult.Scope,
+            LinkedAt = DateTimeOffset.UtcNow
+        });
+    }
+
+    await db.SaveChangesAsync(ct);
+
+    var (jwt, expiresAt) = issuer.Issue(user);
+    return Results.Ok(new LoginResponse(jwt, expiresAt, new UserResponse(user.Id, user.Email, user.DisplayName)));
 });
 
 app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
@@ -230,16 +379,25 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, ClaimsPrincipal 
     var owner = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == ownerId, ct);
     if (owner is not null)
     {
+        var notCodeError = category == FailureCategory.NotCodeError;
         db.EmailMessages.Add(new EmailMessage
         {
             Id = Guid.NewGuid(),
             UserId = owner.Id,
             To = owner.Email,
-            Subject = $"DevSup: failure detected on {failure.Method} {failure.Path}",
-            HtmlBody = $"<p>DevSup detected a failure on <code>{failure.Method} {failure.Path}</code> " +
-                       $"with status <strong>{failure.StatusCode}</strong>.</p>" +
-                       $"<p>Classification: <strong>{kind}</strong> ({category}).</p>" +
-                       $"<p>Next step: ticket <strong>{ticket.Status}</strong> — the agent will investigate code errors.</p>",
+            Subject = notCodeError
+                ? $"DevSup: not a code error on {failure.Method} {failure.Path}"
+                : $"DevSup: failure detected on {failure.Method} {failure.Path}",
+            HtmlBody = notCodeError
+                ? $"<p>DevSup detected a <strong>{kind}</strong> failure on <code>{failure.Method} {failure.Path}</code> " +
+                  $"(HTTP {failure.StatusCode}).</p>" +
+                  $"<p>This was classified as <em>not a code error</em>, so the repair agent will <strong>not</strong> " +
+                  $"attempt a code fix and no patch is scheduled. Review the credentials, client, rate limits, or " +
+                  $"downstream services instead.</p>"
+                : $"<p>DevSup detected a failure on <code>{failure.Method} {failure.Path}</code> " +
+                  $"with status <strong>{failure.StatusCode}</strong>.</p>" +
+                  $"<p>Classification: <strong>{kind}</strong> ({category}).</p>" +
+                  $"<p>Next step: ticket <strong>{ticket.Status}</strong> — the agent will investigate code errors.</p>",
             CreatedAt = DateTimeOffset.UtcNow
         });
     }
