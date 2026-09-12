@@ -54,6 +54,11 @@ builder.Services.AddAuthorization();
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.CamelCase));
+});
+
 var app = builder.Build();
 
 await using (var scope = app.Services.CreateAsyncScope())
@@ -163,8 +168,8 @@ app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsP
     }
 
     return Results.Created($"/api/repositories/{repository.Id}",
-        new RepositoryResponse(repository.Id, repository.Provider, repository.CloneUrl, repository.DefaultBranch, repository.AppUrl));
-});
+        new RepositoryResponse(repository.Id, repository.Provider.ToString(), repository.CloneUrl, repository.DefaultBranch, repository.AppUrl));
+}).RequireAuthorization();
 
 app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
@@ -172,11 +177,11 @@ app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db,
     var repositories = await db.ConnectedRepositories
         .AsNoTracking()
         .Where(r => r.OwnerUserId == ownerId)
-        .Select(r => new RepositoryResponse(r.Id, r.Provider, r.CloneUrl, r.DefaultBranch, r.AppUrl))
+        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl))
         .ToListAsync(ct);
 
     return Results.Ok(repositories);
-});
+}).RequireAuthorization();
 
 app.MapPost("/api/ingest", async (IngestFailureRequest request, ClaimsPrincipal user, DevSupDbContext db, IFailureClassifier classifier, CancellationToken ct) =>
 {
@@ -243,15 +248,16 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, ClaimsPrincipal 
 
     return Results.Created($"/api/tickets/{ticket.Id}",
         new IngestResponse(failure.Id, ticket.Id, category.ToString(), kind.ToString(), status.ToString()));
-});
+}).RequireAuthorization();
 
 app.MapGet("/api/tickets", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
     var ownerId = user.GetUserId();
 
-    var tickets = await db.RepairTickets
+    var tickets = (await db.RepairTickets
         .AsNoTracking()
         .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId))
+        .ToListAsync(ct))
         .OrderByDescending(t => t.UpdatedAt)
         .Select(t => new TicketResponse(
             t.Id,
@@ -264,10 +270,10 @@ app.MapGet("/api/tickets", async (ClaimsPrincipal user, DevSupDbContext db, Canc
             t.PatchSummary,
             t.CommitSha,
             t.UpdatedAt))
-        .ToListAsync(ct);
+        .ToList();
 
     return Results.Ok(tickets);
-});
+}).RequireAuthorization();
 
 app.Run();
 
