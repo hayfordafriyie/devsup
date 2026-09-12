@@ -14,7 +14,7 @@ public sealed record CreateRepositoryRequest(GitProvider Provider, string CloneU
 
 public sealed record RepositoryResponse(
     Guid Id,
-    GitProvider Provider,
+    string Provider,
     string CloneUrl,
     string DefaultBranch,
     string? AppUrl);
