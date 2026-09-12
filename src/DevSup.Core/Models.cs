@@ -71,5 +71,28 @@ public sealed record EmailMessage
     public required string Subject { get; init; }
     public required string HtmlBody { get; init; }
     public bool Sent { get; init; }
+
+    /// <summary>Set when the outbox worker successfully sent the message.</summary>
+    public DateTimeOffset? SentAt { get; init; }
+
+    /// <summary>Number of delivery attempts so far (bounded by Emailing:MaxAttempts).</summary>
+    public int Attempts { get; init; }
+
+    /// <summary>Last delivery error, kept for diagnostics.</summary>
+    public string? LastError { get; init; }
     public DateTimeOffset CreatedAt { get; init; }
+}
+
+public sealed record OAuthToken
+{
+    public required Guid Id { get; init; }
+    public required Guid UserId { get; init; }
+    public required GitProvider Provider { get; init; }
+
+    /// <summary>Provider access token, encrypted at rest by Infrastructure's key protector.</summary>
+    public required string EncryptedAccessToken { get; init; }
+
+    /// <summary>Space-separated scopes granted by the provider (e.g. "repo user:email").</summary>
+    public string? Scope { get; init; }
+    public DateTimeOffset LinkedAt { get; init; }
 }

@@ -13,6 +13,7 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
     public DbSet<RepairTicket> RepairTickets => Set<RepairTicket>();
     public DbSet<AiModelKeyBinding> AiModelKeyBindings => Set<AiModelKeyBinding>();
     public DbSet<EmailMessage> EmailMessages => Set<EmailMessage>();
+    public DbSet<OAuthToken> OAuthTokens => Set<OAuthToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -79,7 +80,18 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(m => m.To).HasMaxLength(320).IsRequired();
             entity.Property(m => m.Subject).HasMaxLength(512).IsRequired();
             entity.Property(m => m.HtmlBody).HasMaxLength(16_384).IsRequired();
+            entity.Property(m => m.LastError).HasMaxLength(2048);
             entity.HasIndex(m => new { m.Sent, m.CreatedAt });
+        });
+
+        modelBuilder.Entity<OAuthToken>(entity =>
+        {
+            entity.ToTable("oauth_tokens");
+            entity.HasKey(t => t.Id);
+            entity.Property(t => t.Provider).HasConversion<int>();
+            entity.Property(t => t.EncryptedAccessToken).HasMaxLength(4096).IsRequired();
+            entity.Property(t => t.Scope).HasMaxLength(512);
+            entity.HasIndex(t => new { t.UserId, t.Provider }).IsUnique();
         });
 
         base.OnModelCreating(modelBuilder);
