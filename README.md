@@ -5,8 +5,9 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **scaffold / v0.1** — solution layout, domain model and failure
-> classifier in place. Remaining roadmap at the bottom.
+> Project status: **v0.2** — EF Core + SQLite persistence, JWT accounts (register/login),
+> connected repositories, failure ingest with classifier triage, repair tickets, and an
+> email outbox are implemented and covered by 17 passing tests.
 
 ---
 
@@ -79,7 +80,7 @@ package stay independently deployable and testable.
 |---|---|---|
 | **Web platform / API** | `DevSup.Api` | Accounts, OAuth connections, repo & branch configuration, AI key management, failure ingest endpoint, email dispatch |
 | **Domain core** | `DevSup.Core` | Entities, enums, and pure logic/triage (classifier) — zero infra dependencies |
-| **Infrastructure** | `DevSup.Infrastructure` | EF Core + PostgreSQL, git provider adapters (GitHub/GitLab), AI model clients (BYO key), SMTP transport, key encryption at rest |
+| **Infrastructure** | `DevSup.Infrastructure` | EF Core + SQLite (dev; PostgreSQL later), git provider adapters (GitHub/GitLab), AI model clients (BYO key), SMTP transport, key encryption at rest |
 | **Agent / repair engine** | `DevSup.Agent` | Background worker: consumes triaged failures, drives the investigate → patch → push loop |
 | **Instrumentation package** | `DevSup.Instrumentation` | NuGet middleware dropped into the customer's app; captures failures and reports them (separate repo in the future if needed) |
 | **Tests** | `DevSup.Tests` | Unit + integration tests |
@@ -148,15 +149,17 @@ devsup/
 └─ README.md
 ```
 
-## 10. Data model (planned EF Core + PostgreSQL)
+## 10. Data model (EF Core + SQLite, migrations applied at startup)
 
-- `Users` — account, email, display name
-- `ConnectedRepositories` — provider, clone URL, branch, optional app URL
-- `OAuthTokens` — encrypted provider credentials per integration
+- `Users` — account, email, display name, **PBKDF2 password hash**, created timestamp
+- `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL
 - `AiModelKeyBindings` — user, provider, model, encrypted key
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
 - `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA
-- `EmailMessages` — outbox (to, subject, body, sent)
+- `EmailMessages` — outbox (to, subject, html body, sent, created at)
+
+Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
+initial schema shipped as the `InitialCreate` EF Core migration.
 
 ## 11. Local development
 
@@ -167,7 +170,24 @@ dotnet test
 dotnet run --project src/DevSup.Api
 ```
 
-The API exposes `/` as a health check and OpenAPI in Development.
+The API exposes `/` as a health check and OpenAPI in Development. SQLite migrations run
+automatically at startup (a `devsup.db` file is created next to the repo).
+
+### API endpoints (v0.2)
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/` | — | Health check |
+| `POST` | `/api/users/register` | — | Create account (email, display name, password ≥ 8 chars) |
+| `POST` | `/api/users/login` | — | Exchange credentials for a JWT |
+| `GET` | `/api/repositories` | Bearer | List connected repositories |
+| `POST` | `/api/repositories` | Bearer | Connect a repository (provider, clone URL, branch) |
+| `POST` | `/api/ingest` | Bearer | Report a failure; triaged into a repair ticket |
+| `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
+
+JWT settings live in `appsettings.json` under `Jwt` (issuer, audience, secret key).
+Override `Jwt:SecretKey` via configuration/environment in any real deployment —
+the checked-in value is development-only.
 
 ### Docker
 
@@ -183,9 +203,9 @@ push/PR to `master`.
 
 ## 12. Roadmap
 
-- **v0.1** *(this commit)* — solution scaffold, domain model, failure classifier + tests
-- **v0.2** — accounts + GitHub OAuth, connect repo + branch, ingest endpoint, log failures
-- **v0.3** — classifier-driven triage, email alerts (error + recommended fix)
+- **v0.1** — solution scaffold, domain model, failure classifier + tests
+- **v0.2** *(done)* — SQLite persistence + migrations, JWT accounts, connect repo, ingest endpoint, classifier triage, tickets, email outbox
+- **v0.3** — GitHub OAuth, email sending (SMTP), "not a code error" email flows
 - **v0.4** — AI repair loop: investigate → patch → commit → push, status updates, "fixed" emails
 - **v0.5** — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, not-code-error skip flows
 - **v0.6** — consumer versioning of the middleware, payload sanitization hardening, PR-based (opt-in) flow
@@ -193,5 +213,5 @@ push/PR to `master`.
 
 ---
 
-Built with **.NET 10**, **ASP.NET Core**, **EF Core + PostgreSQL** (planned), **xUnit**,
-and **GitHub Actions**.
+Built with **.NET 10**, **ASP.NET Core**, **EF Core + SQLite** (dev; PostgreSQL planned),
+**JWT auth (PBKDF2)** , **xUnit**, and **GitHub Actions**.
