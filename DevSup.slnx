@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DevSup.Agent/DevSup.Agent.csproj" />
+    <Project Path="src/DevSup.Api/DevSup.Api.csproj" />
+    <Project Path="src/DevSup.Core/DevSup.Core.csproj" />
+    <Project Path="src/DevSup.Infrastructure/DevSup.Infrastructure.csproj" />
+    <Project Path="src/DevSup.Instrumentation/DevSup.Instrumentation.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DevSup.Tests/DevSup.Tests.csproj" />
+  </Folder>
+</Solution>
