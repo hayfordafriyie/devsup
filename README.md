@@ -169,6 +169,18 @@ dotnet run --project src/DevSup.Api
 
 The API exposes `/` as a health check and OpenAPI in Development.
 
+### Docker
+
+```bash
+docker build -t devsup-api .
+docker run --rm -p 8080:8080 devsup-api
+```
+
+### CI
+
+`.github/workflows/ci.yml` runs `restore` → `build` → `test` in Release on every
+push/PR to `master`.
+
 ## 12. Roadmap
 
 - **v0.1** *(this commit)* — solution scaffold, domain model, failure classifier + tests
@@ -182,4 +194,4 @@ The API exposes `/` as a health check and OpenAPI in Development.
 ---
 
 Built with **.NET 10**, **ASP.NET Core**, **EF Core + PostgreSQL** (planned), **xUnit**,
-and **GitHub Actions** (planned).
+and **GitHub Actions**.
