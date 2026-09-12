@@ -7,6 +7,9 @@ public sealed record User
     public required Guid Id { get; init; }
     public required string Email { get; init; }
     public required string DisplayName { get; init; }
+
+    /// <summary>PBKDF2 hash produced by PasswordHasher&lt;User&gt;, never the plain-text password.</summary>
+    public required string PasswordHash { get; init; }
     public DateTimeOffset CreatedAt { get; init; }
 }
 
