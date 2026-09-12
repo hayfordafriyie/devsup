@@ -1,0 +1,13 @@
+bin/
+obj/
+**/bin/
+**/obj/
+.git/
+.gitignore
+*.db
+*.db-shm
+*.db-wal
+Dockerfile
+.dockerignore
+*.sln
+*.slnx
