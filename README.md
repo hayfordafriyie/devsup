@@ -5,9 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.2** — EF Core + SQLite persistence, JWT accounts (register/login),
-> connected repositories, failure ingest with classifier triage, repair tickets, and an
-> email outbox are implemented and covered by 17 passing tests.
+> Project status: **v0.3** — on top of v0.2 (SQLite persistence, JWT accounts, connected
+> repositories, ingest triage, tickets), emails now flow through an **outbox worker that
+> delivers via SMTP with retries**, GitHub OAuth can **link an account and store an
+> encrypted access token**, and every failure produces an email tailored to whether it is
+> (or is not) a code error. 29 tests passing.
 
 ---
 
@@ -159,7 +161,27 @@ devsup/
 - `EmailMessages` — outbox (to, subject, html body, sent, created at)
 
 Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
-initial schema shipped as the `InitialCreate` EF Core migration.
+schema shipped as EF Core migrations (`InitialCreate`, then
+`AddEmailOutboxRetriesAndOAuthTokens`).
+
+### Emails (outbox + SMTP)
+
+Every detected failure enqueues an `EmailMessage` outbox row. A background worker
+(`EmailOutboxWorker`) drains the outbox on an interval (default 15 s, configurable under
+`Emailing:`), attempts delivery via SMTP (`Smtp:` section in appsettings), and marks the
+message `Sent` only on success. Failed sends bump `Attempts` and store `LastError`;
+delivery gives up after `Emailing:MaxAttempts` (default 5). Non-code errors get an
+explanatory "not a code error — no patch scheduled" email instead of a repair notice.
+
+### GitHub OAuth
+
+- `GET /api/auth/github/login` — redirects to GitHub with a signed state cookie.
+- `GET /api/auth/github/callback` — exchanges the code, resolves the profile email,
+  creates or links the account, stores the access token encrypted at rest (AES-256-GCM,
+  key from `Security:DataProtectionKey`), and returns a JWT.
+
+OAuth only works when `GitHub:ClientId` and `GitHub:ClientSecret` are configured;
+`BuildAuthorizeUrl`/token/user URLs are overridable per environment.
 
 ## 11. Local development
 
@@ -180,14 +202,17 @@ automatically at startup (a `devsup.db` file is created next to the repo).
 | `GET` | `/` | — | Health check |
 | `POST` | `/api/users/register` | — | Create account (email, display name, password ≥ 8 chars) |
 | `POST` | `/api/users/login` | — | Exchange credentials for a JWT |
+| `GET` | `/api/auth/github/login` | — | Start GitHub OAuth (redirects to GitHub) |
+| `GET` | `/api/auth/github/callback` | — | GitHub OAuth callback → links account, returns JWT |
 | `GET` | `/api/repositories` | Bearer | List connected repositories |
 | `POST` | `/api/repositories` | Bearer | Connect a repository (provider, clone URL, branch) |
 | `POST` | `/api/ingest` | Bearer | Report a failure; triaged into a repair ticket |
 | `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
 
-JWT settings live in `appsettings.json` under `Jwt` (issuer, audience, secret key).
-Override `Jwt:SecretKey` via configuration/environment in any real deployment —
-the checked-in value is development-only.
+Secrets at rest (GitHub access tokens) are encrypted with AES-256-GCM under
+`Security:DataProtectionKey`. JWT settings live under `Jwt`. Override any of these via
+configuration/environment in a real deployment — the checked-in values are for
+development only.
 
 ### Docker
 
@@ -205,13 +230,14 @@ push/PR to `master`.
 
 - **v0.1** — solution scaffold, domain model, failure classifier + tests
 - **v0.2** *(done)* — SQLite persistence + migrations, JWT accounts, connect repo, ingest endpoint, classifier triage, tickets, email outbox
-- **v0.3** — GitHub OAuth, email sending (SMTP), "not a code error" email flows
+- **v0.3** *(done)* — SMTP outbox delivery with retries, GitHub OAuth + encrypted token storage, not-a-code-error emails
 - **v0.4** — AI repair loop: investigate → patch → commit → push, status updates, "fixed" emails
-- **v0.5** — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, not-code-error skip flows
+- **v0.5** — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, key management API
 - **v0.6** — consumer versioning of the middleware, payload sanitization hardening, PR-based (opt-in) flow
 - **v0.7** — multi-repo, dashboards, Slack/webhook notifications, external app-URL checks
 
 ---
 
 Built with **.NET 10**, **ASP.NET Core**, **EF Core + SQLite** (dev; PostgreSQL planned),
-**JWT auth (PBKDF2)** , **xUnit**, and **GitHub Actions**.
+**JWT auth (PBKDF2)**, **AES-256-GCM secret encryption**, **GitHub OAuth**, **SMTP**,
+**xUnit**, and **GitHub Actions**.
