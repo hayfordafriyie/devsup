@@ -17,6 +17,7 @@ using DevSup.Infrastructure.Security;
 using DevSup.Infrastructure.Webhooks;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -164,6 +165,17 @@ if (app.Environment.IsDevelopment())
 app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseDefaultFiles(new DefaultFilesOptions
+{
+    RequestPath = "/dashboard",
+    DefaultFileNames = { "index.html" }
+});
+app.UseStaticFiles(new StaticFileOptions
+{
+    RequestPath = "/dashboard",
+    FileProvider = new PhysicalFileProvider(Path.Combine(app.Environment.ContentRootPath, "wwwroot"))
+});
 
 app.MapGet("/", () => Results.Ok(new { service = "DevSup", status = "ok" }));
 
@@ -691,29 +703,28 @@ app.MapGet("/api/tickets", async (Guid? repositoryId, ClaimsPrincipal user, DevS
 {
     var ownerId = user.GetUserId();
 
-    var queries = db.RepairTickets
-        .AsNoTracking()
-        .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId));
-
-    if (repositoryId is not null)
-    {
-        queries = queries.Where(t => t.RepositoryId == repositoryId);
-    }
-
-    var tickets = (await queries.ToListAsync(ct))
-        .OrderByDescending(t => t.UpdatedAt)
-        .Select(t => new TicketResponse(
-            t.Id,
-            t.FailureEventId,
-            t.RepositoryId,
-            t.Category.ToString(),
-            t.Kind.ToString(),
-            t.Status.ToString(),
-            t.Analysis,
-            t.PatchSummary,
-            t.CommitSha,
-            t.PullRequestUrl,
-            t.UpdatedAt))
+    var tickets = (await (
+            from t in db.RepairTickets.AsNoTracking()
+            join f in db.FailureEvents.AsNoTracking() on t.FailureEventId equals f.Id
+            where db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId)
+            select new { Ticket = t, Failure = f }).ToListAsync(ct))
+        .Where(x => repositoryId is null || x.Ticket.RepositoryId == repositoryId)
+        .OrderByDescending(x => x.Ticket.UpdatedAt)
+        .Select(x => new TicketResponse(
+            x.Ticket.Id,
+            x.Ticket.FailureEventId,
+            x.Ticket.RepositoryId,
+            x.Ticket.Category.ToString(),
+            x.Ticket.Kind.ToString(),
+            x.Ticket.Status.ToString(),
+            x.Ticket.Analysis,
+            x.Ticket.PatchSummary,
+            x.Ticket.CommitSha,
+            x.Ticket.PullRequestUrl,
+            x.Ticket.UpdatedAt,
+            x.Failure.Method,
+            x.Failure.Path,
+            x.Failure.StatusCode))
         .ToList();
 
     return Results.Ok(tickets);
