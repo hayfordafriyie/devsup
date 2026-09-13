@@ -64,6 +64,10 @@ public sealed record AiModelKeyBinding
     public required string Model { get; init; }
     /// <summary>Encrypted at rest in Infrastructure.</summary>
     public required string EncryptedApiKey { get; init; }
+
+    /// <summary>Last 4 characters of the plaintext key, kept for display only.</summary>
+    public string? KeyMask { get; init; }
+    public DateTimeOffset UpdatedAt { get; init; }
 }
 
 public sealed record EmailMessage

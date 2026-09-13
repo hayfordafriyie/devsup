@@ -72,6 +72,8 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(k => k.Provider).HasConversion<int>();
             entity.Property(k => k.Model).HasMaxLength(100).IsRequired();
             entity.Property(k => k.EncryptedApiKey).HasMaxLength(2048).IsRequired();
+            entity.Property(k => k.KeyMask).HasMaxLength(16);
+            entity.HasIndex(k => new { k.UserId, k.Provider, k.Model }).IsUnique();
         });
 
         modelBuilder.Entity<EmailMessage>(entity =>
