@@ -1146,6 +1146,26 @@ app.MapDelete("/api/webhooks/{id:guid}", async (Guid id, ClaimsPrincipal user, D
     return Results.NoContent();
 }).RequireAuthorization();
 
+app.MapPost("/api/webhooks/{id:guid}/rotate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, AuditRecorder audit, CancellationToken ct) =>
+{
+    var webhook = await db.WebhookEndpoints.FirstOrDefaultAsync(w => w.Id == id && w.UserId == user.GetUserId(), ct);
+    if (webhook is null)
+    {
+        return Results.NotFound();
+    }
+
+    var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+    db.Entry(webhook).Property(w => w.EncryptedSecret).CurrentValue = protector.Protect(secret);
+    await db.SaveChangesAsync(ct);
+
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == user.GetUserId(), ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "webhook.rotate", "WebhookEndpoint",
+        webhook.Id.ToString(), before: webhook.Url, ct: ct);
+
+    return Results.Ok(new CreateWebhookResponse(webhook.Id, webhook.Url, secret, ResolveEvents(webhook.EventMask), webhook.CreatedAt, webhook.Name, webhook.Channel));
+}).RequireAuthorization();
+
 app.Run();
 
 static async Task<bool> IsAdminAsync(ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
