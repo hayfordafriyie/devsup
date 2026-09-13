@@ -5,13 +5,13 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.7** — on top of v0.6 (consumer schema versioning, payload
-> sanitization, pull-request repair flow), the platform can now **probe the app URL
-> you linked to each repository**, spot a live outage, and feed it through the same
-> triage/repair pipeline without your SDK installed; every ticket transition can push
-> **HMAC-signed webhook notifications** to your own endpoints; a **cross-repository
-> overview API and a self-contained dashboard UI** at `/dashboard/` aggregate health
-> and repair state across all your repos. 98 tests passing.
+> Project status: **v0.8** — on top of v0.7 (webhooks, app-URL health checks, overview
+> API, dashboard), you can now **replay** any past failure event (re-sends the email and
+> webhook fan-out) and **re-dispatch** a stalled or needs-review ticket straight into
+> the repair queue; webhook endpoints support **Slack and Teams** channels whose
+> payloads are formatted for the target at delivery time (still HMAC-signed); and the
+> database provider is **configurable** between SQLite (default) and **PostgreSQL /
+> Npgsql** via `Database:Provider`. 112 tests passing.
 
 ---
 
@@ -24,12 +24,13 @@ instead of digging through logs.
 5. [Harry vs. machine-readable errors](#5-code-errors-vs-not-code-errors)
 6. [Bring-your-own AI keys](#6-bring-your-own-ai-keys)
 7. [Email notifications](#7-email-notifications)
-8. [Webhooks & health checks](#8-webhooks--health-checks)
-9. [Security & sanitization](#9-security--sanitization)
-10. [Repository layout](#10-repository-layout)
-11. [Data model](#11-data-model)
-12. [Local development](#12-local-development)
-13. [Roadmap](#13-roadmap)
+8. [Webhooks, channels & health checks](#8-webhooks-channels--health-checks)
+9. [Event replay & re-dispatch](#9-event-replay--re-dispatch)
+10. [Security & sanitization](#10-security--sanitization)
+11. [Repository layout](#11-repository-layout)
+12. [Data model](#12-data-model)
+13. [Local development](#13-local-development)
+14. [Roadmap](#14-roadmap)
 
 ---
 
@@ -144,9 +145,9 @@ An email outbox (`EmailMessage`) decouples notification from transport:
 Sending is the responsibility of `DevSup.Infrastructure` (SMTP first; transactional
 providers later). Failed sends are retried, never silently dropped.
 
-## 8. Webhooks & health checks
+## 8. Webhooks, channels & health checks
 
-### Webhook notifications
+### Webhook notifications & channels
 
 Every ticket transition can be mirrored to your own HTTP endpoints. Register an
 endpoint with `POST /api/webhooks` and receive an **HMAC-SHA256 signature** you must
@@ -159,6 +160,17 @@ Each delivery `POST`s a JSON payload with headers:
 - `X-DevSup-Event` — camelCase event name (`failureDetected`, `fixPushed`,
   `fixPendingReview`, `needsHumanReview`, `notCodeError`)
 
+Endpoints declare a `channel`:
+
+| Channel | Payload |
+|---|---|
+| `http` (default) | The raw DevSup event JSON, byte-for-byte as queued |
+| `slack` | Incoming-webhook message with mrkdwn `blocks` (text `*DevSup {event}*`, failure/repo/ticket fields) |
+| `teams` | Office 365 **MessageCard** (`@type: MessageCard`, theme color, facts table) |
+
+Slack/Teams bodies are formatted at delivery time from the same stored event payload;
+the HMAC signature is always computed over the body actually sent. Give each endpoint
+a friendly `name` (e.g. `#incidents on Slack`) and it shows up formatted everywhere.
 Events are opt-in per endpoint (`events` list on create, all by default). Failed
 deliveries are retried from an outbox (`Webhooks:` interval / `MaxAttempts`, default
 8 tries); deleted or deactivated endpoints are drained silently.
@@ -177,7 +189,21 @@ The `GET /api/overview` endpoint (and the dashboard) aggregates this health stat
 your ticket counts across **all** repositories, so one home screen covers the whole
 fleet.
 
-## 9. Security & sanitization
+## 9. Event replay & re-dispatch
+
+Some failures deserve a second look — a transient SMTP outage, a receiver that was
+down at notify time, an agent that stalled mid-repair.
+
+- `POST /api/failures/{failureId}/replay` — re-runs the full notification fan-out
+  (email + webhook) for an existing failure event from your own repositories, exactly
+  once per call, using the same templates and payloads as the original.
+- `POST /api/tickets/{ticketId}/redispatch` — returns a `new` or `needsHumanReview`
+  repair ticket to the **New** state so the repair worker picks it up again. Tickets
+  that are already fixed, pending review, or closed are rejected with `409`.
+
+Both are scoped strictly to the authenticated user's repositories.
+
+## 10. Security & sanitization
 
 - **Payload scrubbing** at capture time: `Authorization`, `X-Api-Key`, `Cookie`,
   `Set-Cookie` headers and secrets stripped before a failure event is stored.
@@ -189,7 +215,7 @@ fleet.
   PatchProposed → FixPushed → FixVerified → Closed* so every auto-mutation is visible
   and reversible.
 
-## 10. Repository layout
+## 11. Repository layout
 
 ```
 devsup/
@@ -204,7 +230,7 @@ devsup/
 └─ README.md
 ```
 
-## 11. Data model (EF Core + SQLite, migrations applied at startup)
+## 12. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
 
 - `Users` — account, email, display name, **PBKDF2 password hash**, created timestamp
 - `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`)
@@ -212,14 +238,14 @@ devsup/
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
 - `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA, last agent error, optional PR/MR URL
 - `EmailMessages` — outbox (to, subject, html body, sent, created at)
-- `WebhookEndpoints` — user, destination URL, events mask, **encrypted signing secret**, active
+- `WebhookEndpoints` — user, destination URL, channel (`http`/`slack`/`teams`), event mask, **encrypted signing secret**, active
 - `WebhookDeliveries` — outbox (webhook, event, payload, attempts, last error, sent)
 
 Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`).
 
 ### The repair agent (v0.4)
 
@@ -267,7 +293,7 @@ explanatory "not a code error — no patch scheduled" email instead of a repair 
 OAuth only works when the provider's `ClientId` and `ClientSecret` are configured
 (`GitHub:` / `GitLab:`); authorize/token/user URLs are overridable per environment.
 
-## 12. Local development
+## 13. Local development
 
 ```bash
 dotnet restore
@@ -277,7 +303,9 @@ dotnet run --project src/DevSup.Api
 ```
 
 The API exposes `/` as a health check and OpenAPI in Development. SQLite migrations run
-automatically at startup (a `devsup.db` file is created next to the repo).
+automatically at startup (a `devsup.db` file is created next to the repo). Set
+`Database:Provider=postgresql` and a `ConnectionStrings:DevSup` PostgreSQL URL to run
+the same migration set on PostgreSQL via Npgsql instead.
 
 ### API endpoints
 
@@ -299,7 +327,9 @@ automatically at startup (a `devsup.db` file is created next to the repo).
 | `DELETE` | `/api/ai-keys` | Bearer | Delete an AI key binding |
 | `GET` | `/api/overview` | Bearer | Cross-repo health + ticket summary (dashboard feed) |
 | `GET` | `/api/tickets?repositoryId=` | Bearer | Filter tickets to one repository |
-| `POST` | `/api/webhooks` | Bearer | Register a webhook endpoint (returns the signing secret once) |
+| `POST` | `/api/failures/{failureId}/replay` | Bearer | Re-send email + webhook notifications for a past failure |
+| `POST` | `/api/tickets/{ticketId}/redispatch` | Bearer | Return a new/needs-review ticket to the repair queue |
+| `POST` | `/api/webhooks` | Bearer | Register a webhook endpoint (returns the signing secret once; `channel` = http/slack/teams) |
 | `GET` | `/api/webhooks` | Bearer | List webhook endpoints |
 | `DELETE` | `/api/webhooks/{id}` | Bearer | Remove a webhook endpoint |
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
@@ -323,7 +353,7 @@ docker run --rm -p 8080:8080 devsup-api
 `.github/workflows/ci.yml` runs `restore` → `build` → `test` in Release on every
 push/PR to `master`.
 
-## 13. Roadmap
+## 14. Roadmap
 
 - **v0.1** — solution scaffold, domain model, failure classifier + tests
 - **v0.2** *(done)* — SQLite persistence + migrations, JWT accounts, connect repo, ingest endpoint, classifier triage, tickets, email outbox
@@ -332,7 +362,8 @@ push/PR to `master`.
 - **v0.5** *(done)* — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, key management API
 - **v0.6** *(done)* — consumer versioning of the middleware (`X-DevSup-Schema-Version`), payload sanitization hardening, PR-based (opt-in) repair flow
 - **v0.7** *(done)* — webhook notifications (HMAC-signed), external app-URL health checks, cross-repository `/api/overview`, dashboard UI at `/dashboard/`
-- **v0.8** — multi-tenant admin, PostgreSQL, transaction/event replay, notification routing (Slack/Teams)
+- **v0.8** *(done)* — event replay + ticket re-dispatch, Slack/Teams notification channels, configurable PostgreSQL provider
+- **v0.9** — multi-tenant admin, notification routing UI, event retention/archiving
 
 ---
 
