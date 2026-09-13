@@ -497,6 +497,32 @@
         }).join("");
     }
 
+    function renderAdminFleet(overview, page) {
+        document.getElementById("admin-fleet-summary").textContent =
+            overview.totalRepositories + " repositories \u00b7 " +
+            overview.healthyRepos + " healthy \u00b7 " +
+            overview.unhealthyRepos + " unhealthy \u00b7 " +
+            overview.uncheckedRepos + " unchecked \u00b7 " +
+            overview.pausedRepos + " paused \u00b7 " +
+            overview.archivedRepos + " archived";
+        var tbody = document.getElementById("admin-fleet").querySelector("tbody");
+        tbody.innerHTML = (page.items || []).map(function (r) {
+            var health = r.appHealthy === true ? "healthy" : r.appHealthy === false ? "unhealthy" : "unchecked";
+            var states = [];
+            if (r.archived) states.push("archived");
+            if (r.paused) states.push("paused");
+            var state = states.length ? states.join(", ") : "active";
+            return "<tr>" +
+                "<td>" + escapeHtml(repoName(r.cloneUrl)) + "</td>" +
+                "<td>" + escapeHtml(r.ownerEmail) + "</td>" +
+                "<td>" + health + "</td>" +
+                "<td>" + r.openTickets + "</td>" +
+                "<td>" + r.totalFailures + "</td>" +
+                "<td>" + escapeHtml(state) + "</td>" +
+                "</tr>";
+        }).join("");
+    }
+
     async function loadAdmin() {
         var users = await adminApi("/api/admin/users");
         if (users === null) {
@@ -509,6 +535,11 @@
         document.getElementById("admin-toggle").hidden = false;
         if (document.getElementById("admin-section").hidden) return;
         renderAdminUsers(users);
+        var overview = await adminApi("/api/admin/overview");
+        var fleet = await adminApi("/api/admin/repositories?pageSize=100");
+        if (overview && fleet) {
+            renderAdminFleet(overview, fleet);
+        }
         var audit = await adminApi("/api/admin/audit");
         renderAdminAudit(audit || []);
         var failures = await adminApi("/api/failures?pageSize=50");

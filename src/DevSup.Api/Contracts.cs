@@ -151,7 +151,34 @@ public sealed record AdminOverviewResponse(
     int TotalRepositories,
     int TotalFailures,
     int OpenTickets,
-    int WebhookEndpoints);
+    int WebhookEndpoints,
+    int HealthyRepos = 0,
+    int UnhealthyRepos = 0,
+    int UncheckedRepos = 0,
+    int PausedRepos = 0,
+    int ArchivedRepos = 0);
+
+public sealed record AdminRepositoryRow(
+    Guid Id,
+    string OwnerEmail,
+    string CloneUrl,
+    string Provider,
+    string DefaultBranch,
+    string? AppUrl,
+    bool? AppHealthy,
+    DateTimeOffset? AppHealthCheckedAt,
+    string? AppHealthLastError,
+    bool Paused,
+    bool Archived,
+    int OpenTickets,
+    int TotalFailures,
+    DateTimeOffset ConnectedAt);
+
+public sealed record AdminRepositoryPage(
+    IReadOnlyList<AdminRepositoryRow> Items,
+    int Page,
+    int PageSize,
+    int Total);
 
 public sealed record AuditEntryResponse(
     Guid Id,

@@ -1690,8 +1690,85 @@ app.MapGet("/api/admin/overview", async (ClaimsPrincipal user, DevSupDbContext d
         t => t.Status != TicketStatus.FixPushed && t.Status != TicketStatus.FixVerified
              && t.Status != TicketStatus.Closed, ct);
     var webhooks = await db.WebhookEndpoints.CountAsync(ct);
+    var healthy = await db.ConnectedRepositories.CountAsync(r => r.AppHealthy == true, ct);
+    var unhealthy = await db.ConnectedRepositories.CountAsync(r => r.AppHealthy == false, ct);
+    var uncheckedRepos = await db.ConnectedRepositories.CountAsync(r => r.AppHealthy == null, ct);
+    var pausedRepos = await db.ConnectedRepositories.CountAsync(r => r.Paused, ct);
+    var archivedRepos = await db.ConnectedRepositories.CountAsync(r => r.Archived, ct);
 
-    return Results.Ok(new AdminOverviewResponse(totalUsers, activeUsers, repositories, failures, openTickets, webhooks));
+    return Results.Ok(new AdminOverviewResponse(totalUsers, activeUsers, repositories, failures, openTickets, webhooks,
+        healthy, unhealthy, uncheckedRepos, pausedRepos, archivedRepos));
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/repositories", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct,
+    string? health = null, string? owner = null, bool? paused = null, bool? archived = null, int page = 1, int pageSize = 50) =>
+{
+    if (!await IsAdminAsync(user, db, ct))
+    {
+        return Results.Forbid();
+    }
+
+    page = Math.Max(1, page);
+    pageSize = Math.Clamp(pageSize, 1, 200);
+
+    var query =
+        from r in db.ConnectedRepositories.AsNoTracking()
+        join u in db.Users.AsNoTracking() on r.OwnerUserId equals u.Id
+        select new { Repository = r, OwnerEmail = u.Email };
+
+    if (string.Equals(health, "healthy", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Where(x => x.Repository.AppHealthy == true);
+    }
+    else if (string.Equals(health, "unhealthy", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Where(x => x.Repository.AppHealthy == false);
+    }
+    else if (string.Equals(health, "unchecked", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Where(x => x.Repository.AppHealthy == null);
+    }
+    if (!string.IsNullOrWhiteSpace(owner))
+    {
+        query = query.Where(x => x.OwnerEmail == owner);
+    }
+    if (paused is not null)
+    {
+        query = query.Where(x => x.Repository.Paused == paused);
+    }
+    if (archived is not null)
+    {
+        query = query.Where(x => x.Repository.Archived == archived);
+    }
+
+    var total = await query.CountAsync(ct);
+    var rows = await query
+        .OrderBy(x => x.Repository.CloneUrl)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .Select(x => new AdminRepositoryRow(
+            x.Repository.Id,
+            x.OwnerEmail,
+            x.Repository.CloneUrl,
+            x.Repository.Provider.ToString(),
+            x.Repository.DefaultBranch,
+            x.Repository.AppUrl,
+            x.Repository.AppHealthy,
+            x.Repository.AppHealthCheckedAt,
+            x.Repository.AppHealthLastError,
+            x.Repository.Paused,
+            x.Repository.Archived,
+            db.RepairTickets.Count(t => t.RepositoryId == x.Repository.Id
+                && (t.Status == TicketStatus.New
+                    || t.Status == TicketStatus.Triaged
+                    || t.Status == TicketStatus.Investigating
+                    || t.Status == TicketStatus.PatchProposed
+                    || t.Status == TicketStatus.FixPendingReview)),
+            db.FailureEvents.Count(f => f.RepositoryId == x.Repository.Id),
+            x.Repository.ConnectedAt))
+        .ToListAsync(ct);
+
+    return Results.Ok(new AdminRepositoryPage(rows, page, pageSize, total));
 }).RequireAuthorization();
 
 app.MapGet("/api/admin/users", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>

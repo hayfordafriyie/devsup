@@ -163,6 +163,10 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("\"/activity/export\"", js);
         Assert.Contains("digest-frequency", js);
         Assert.Contains("digestFrequency", js);
+        Assert.Contains("admin-fleet", html2);
+        Assert.Contains("admin-fleet-summary", html2);
+        Assert.Contains("renderAdminFleet", js);
+        Assert.Contains("\"/api/admin/repositories?pageSize=100\"", js);
         Assert.Contains("repo-bulk-bar", html2);
         Assert.Contains("data-bulk-action", js);
         Assert.Contains("repo-select", js);
