@@ -11,6 +11,13 @@ public sealed class DevSupInstrumentationOptions
     /// <summary>Repository id this app belongs to (from the platform).</summary>
     public required Guid RepositoryId { get; set; }
 
+    /// <summary>
+    /// Schema version the instrumented application speaks. Must be &lt;= the version
+    /// accepted by the ingest endpoint; DevSup returns 426 Upgrade Required when a
+    /// consumer reports against an unsupported (too-new) schema.
+    /// </summary>
+    public int SchemaVersion { get; set; } = 1;
+
     /// <summary>Maximum request/response payload size captured per failure (chars).</summary>
     public int MaxCapturedPayloadLength { get; set; } = 4_096;
 

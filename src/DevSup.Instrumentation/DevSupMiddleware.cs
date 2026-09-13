@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -41,10 +42,12 @@ public sealed class DevSupMiddleware(
         var path = context.Request.Path.ToString();
         var method = context.Request.Method;
 
-        var payload = await ReadBodyAsync(context.Request);
+        var payload = DevSupPayloadSanitizer.Redact(await ReadBodyAsync(context.Request));
         var eventPayload = new
         {
             repositoryId = options.RepositoryId,
+            schemaVersion = options.SchemaVersion,
+            sdkVersion = DevSupInstrumentationDefaults.SdkVersion,
             statusCode,
             method,
             path,
@@ -56,11 +59,14 @@ public sealed class DevSupMiddleware(
 
         using var httpClient = httpClientFactory.CreateClient("devsup");
         httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Bearer {options.ApiToken}");
+        httpClient.DefaultRequestHeaders.TryAddWithoutValidation(
+            DevSupInstrumentationDefaults.SchemaVersionHeaderName,
+            options.SchemaVersion.ToString(CultureInfo.InvariantCulture));
 
         try
         {
             // Report-and-forget: failures here must never break the application.
-            _ = httpClient.PostAsJsonAsync(options.IngestEndpoint, eventPayload);
+            await httpClient.PostAsJsonAsync(options.IngestEndpoint, eventPayload);
         }
         catch
         {

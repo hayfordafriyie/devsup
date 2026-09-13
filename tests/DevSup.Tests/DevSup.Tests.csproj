@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\DevSup.Core\DevSup.Core.csproj" />
     <ProjectReference Include="..\..\src\DevSup.Api\DevSup.Api.csproj" />
+    <ProjectReference Include="..\..\src\DevSup.Instrumentation\DevSup.Instrumentation.csproj" />
   </ItemGroup>
 
 </Project>
