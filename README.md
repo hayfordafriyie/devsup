@@ -5,13 +5,14 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.8** — on top of v0.7 (webhooks, app-URL health checks, overview
-> API, dashboard), you can now **replay** any past failure event (re-sends the email and
-> webhook fan-out) and **re-dispatch** a stalled or needs-review ticket straight into
-> the repair queue; webhook endpoints support **Slack and Teams** channels whose
-> payloads are formatted for the target at delivery time (still HMAC-signed); and the
-> database provider is **configurable** between SQLite (default) and **PostgreSQL /
-> Npgsql** via `Database:Provider`. 112 tests passing.
+> Project status: **v0.9** — on top of v0.8 (event replay, Slack/Teams channels,
+> PostgreSQL), the platform gained **multi-tenant administration**: a platform-admin
+> role bootstrapped from `Admin:Emails` at startup, admin-only `User`s/overview
+> endpoints, and the ability to **suspend (deactivate) any account**; the dashboard's
+> webhook form now captures the **name and channel** (HTTP / Slack / Teams) in one
+> routing step; and a configurable **event retention worker** purges expired failure
+> events, tickets, webhook deliveries, and sent emails older than a rolling window.
+> 118 tests passing.
 
 ---
 
@@ -26,11 +27,12 @@ instead of digging through logs.
 7. [Email notifications](#7-email-notifications)
 8. [Webhooks, channels & health checks](#8-webhooks-channels--health-checks)
 9. [Event replay & re-dispatch](#9-event-replay--re-dispatch)
-10. [Security & sanitization](#10-security--sanitization)
-11. [Repository layout](#11-repository-layout)
-12. [Data model](#12-data-model)
-13. [Local development](#13-local-development)
-14. [Roadmap](#14-roadmap)
+10. [Platform admin & data retention](#10-platform-admin--data-retention)
+11. [Security & sanitization](#11-security--sanitization)
+12. [Repository layout](#12-repository-layout)
+13. [Data model](#13-data-model)
+14. [Local development](#14-local-development)
+15. [Roadmap](#15-roadmap)
 
 ---
 
@@ -203,7 +205,39 @@ down at notify time, an agent that stalled mid-repair.
 
 Both are scoped strictly to the authenticated user's repositories.
 
-## 10. Security & sanitization
+## 10. Platform admin & data retention
+
+### Platform admin (multi-tenant)
+
+Admins are a special class of user who can see and manage the whole fleet. On startup,
+DevSup **idempotently promotes** every account whose email appears in the
+comma-separated `Admin:Emails` configuration to `IsAdmin = true`, so the first admin is
+always created the moment that account registers.
+
+- `GET /api/admin/overview` — platform totals: users (total/active), repositories,
+  failures, open tickets, webhook endpoints.
+- `GET /api/admin/users` — every user with `isAdmin`, `active`, and per-user
+  repository/ticket counts.
+- `POST /api/admin/users/{id}/deactivate` and `.../activate` — suspend / restore a
+  tenant. A deactivated account can no longer sign in (`403` at login).
+
+Admin endpoints are authorization-guarded per request (a user must be `IsAdmin`), so a
+non-admin always gets `403` regardless of route knowledge.
+
+### Event retention & archiving
+
+Historical failure data grows forever unless pruned. A background worker
+(`Retention:`) sweeps on `IntervalHours` (default 24) and deletes records older than
+`WindowDays` (default 365) in batches of `BatchSize` (default 500):
+
+- **Expired** `FailureEvents` and their `RepairTickets` are removed entirely.
+- **Webhook deliveries** older than the window are removed (endpoints themselves stay).
+- **Emails** older than the window are removed only if already sent — unsent outbox rows
+  are never deleted, so a genuinely pending notification is never dropped.
+
+Setting `Retention:WindowDays = 0` disables purging entirely.
+
+## 11. Security & sanitization
 
 - **Payload scrubbing** at capture time: `Authorization`, `X-Api-Key`, `Cookie`,
   `Set-Cookie` headers and secrets stripped before a failure event is stored.
@@ -215,7 +249,7 @@ Both are scoped strictly to the authenticated user's repositories.
   PatchProposed → FixPushed → FixVerified → Closed* so every auto-mutation is visible
   and reversible.
 
-## 11. Repository layout
+## 12. Repository layout
 
 ```
 devsup/
@@ -230,9 +264,9 @@ devsup/
 └─ README.md
 ```
 
-## 12. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
+## 13. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
 
-- `Users` — account, email, display name, **PBKDF2 password hash**, created timestamp
+- `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, created timestamp
 - `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`)
 - `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
@@ -245,7 +279,7 @@ Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` 
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`).
 
 ### The repair agent (v0.4)
 
@@ -293,7 +327,7 @@ explanatory "not a code error — no patch scheduled" email instead of a repair 
 OAuth only works when the provider's `ClientId` and `ClientSecret` are configured
 (`GitHub:` / `GitLab:`); authorize/token/user URLs are overridable per environment.
 
-## 13. Local development
+## 14. Local development
 
 ```bash
 dotnet restore
@@ -333,11 +367,17 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/webhooks` | Bearer | List webhook endpoints |
 | `DELETE` | `/api/webhooks/{id}` | Bearer | Remove a webhook endpoint |
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
+| `GET` | `/api/admin/overview` | Bearer + admin | Platform-wide totals (users, repos, failures, tickets, webhooks) |
+| `GET` | `/api/admin/users` | Bearer + admin | List every user with admin/active flags and per-user counts |
+| `POST` | `/api/admin/users/{id}/deactivate` | Bearer + admin | Suspend an account (blocks future sign-in) |
+| `POST` | `/api/admin/users/{id}/activate` | Bearer + admin | Restore a suspended account |
 
 Secrets at rest (GitHub access tokens) are encrypted with AES-256-GCM under
 `Security:DataProtectionKey`. JWT settings live under `Jwt`. Agent cadence and the commit
 identity used for pushes live under `Repairing:` (`IntervalSeconds`, `BatchSize`,
-`GitUserName`, `GitUserEmail`). Override any of these via
+`GitUserName`, `GitUserEmail`). Retention sweep cadence lives under `Retention:`
+(`WindowDays`, `IntervalHours`, `BatchSize`) and admin bootstrapping under `Admin:Emails`.
+Override any of these via
 configuration/environment in a real deployment — the checked-in values are for
 development only.
 
@@ -353,7 +393,7 @@ docker run --rm -p 8080:8080 devsup-api
 `.github/workflows/ci.yml` runs `restore` → `build` → `test` in Release on every
 push/PR to `master`.
 
-## 14. Roadmap
+## 15. Roadmap
 
 - **v0.1** — solution scaffold, domain model, failure classifier + tests
 - **v0.2** *(done)* — SQLite persistence + migrations, JWT accounts, connect repo, ingest endpoint, classifier triage, tickets, email outbox
@@ -363,7 +403,7 @@ push/PR to `master`.
 - **v0.6** *(done)* — consumer versioning of the middleware (`X-DevSup-Schema-Version`), payload sanitization hardening, PR-based (opt-in) repair flow
 - **v0.7** *(done)* — webhook notifications (HMAC-signed), external app-URL health checks, cross-repository `/api/overview`, dashboard UI at `/dashboard/`
 - **v0.8** *(done)* — event replay + ticket re-dispatch, Slack/Teams notification channels, configurable PostgreSQL provider
-- **v0.9** — multi-tenant admin, notification routing UI, event retention/archiving
+- **v0.9** *(done)* — platform admin role + account suspension, dashboard webhook channel/name routing, event retention worker
 
 ---
 
