@@ -46,5 +46,6 @@ public enum TicketStatus
     FixPushed,
     FixVerified,
     Closed,
+    NeedsHumanReview,
     SkippedNotCodeError
 }

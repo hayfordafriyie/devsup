@@ -49,6 +49,9 @@ public sealed record RepairTicket
     public string? Analysis { get; init; }
     public string? PatchSummary { get; init; }
     public string? CommitSha { get; init; }
+
+    /// <summary>Last diagnostic from the repair agent (clone/push/provider failures).</summary>
+    public string? LastError { get; init; }
     public DateTimeOffset UpdatedAt { get; init; }
 }
 
