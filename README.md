@@ -5,14 +5,13 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.12** — the **self-service & delivery ops** release. Users can now
-> manage their own account (`GET`/`PUT /api/account` profile, `POST
-> /api/account/password` to rotate the password, each change audited), and webhook
-> operators get two power-ups: `POST /api/webhooks/{id}/test` pushes a signed
-> `devsup.ping` payload through an endpoint end-to-end, and `POST
-> /api/webhooks/{id}/deliveries/{deliveryId}/retry` re-queues a failed delivery without
-> recreating the endpoint. The dashboard gained a **notification-preferences** panel so
-> per-repo email control is a click away. 139 tests passing.
+> Project status: **v0.13** — the **delivery center & digests** release. Email delivery
+> is now visible and operable: `GET /api/emails` lists your message outbox (paginated,
+> filterable by sent state), `POST /api/emails/{id}/retry` re-queues a failed send, and a
+> background **digest worker** (`Digests:`) mails each active user a daily summary of
+> failures, open tickets and recently pushed fixes — silently skipped when there's
+> nothing to report. The dashboard's **Delivery center** shows the email outbox with
+> retry buttons and a one-click `Ping` per webhook endpoint. 143 tests passing.
 
 ---
 
@@ -156,6 +155,23 @@ display name; `POST /api/account/password` verifies the current password and set
 one (min 8 characters). Both write operations are persisted to the audit trail
 (`account.profileUpdate`, `account.passwordChange`).
 
+### Email outbox visibility, retry & daily digests (v0.13)
+
+The email outbox is no longer a black box:
+
+- `GET /api/emails` — your messages, newest first, paginated
+  (`page` / `pageSize` ≤ 100), optionally filtered with `sent=true|false`.
+- `POST /api/emails/{id}/retry` — re-queues a failed message (resets attempt count and
+  last error). Already-sent messages reject retry with `409`. Audited as `email.retry`.
+- **Daily digests** — a background worker (`Digests:Enabled` default on, `Digests:IntervalHours`
+  default 24) mails each **active** user one summary per interval: failures detected,
+  open repair tickets (listed), and fixes pushed within the window. Users with repos but
+  no activity get nothing — no empty digests. Digests ride the normal email outbox, so
+  they obey SMTP retries like everything else.
+
+The dashboard **Delivery center** renders the email outbox with one-click retry, and a
+`Ping` button per webhook endpoint fires a signed `devsup.ping`.
+
 ### Notification preferences (v0.11)
 
 Email is opt-out per repository. `GET /api/notification-preferences` lists your
@@ -273,6 +289,7 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
 - `user.deactivate`, `user.activate` — admin account changes
 - `account.profileUpdate`, `account.passwordChange` — self-service profile/password changes
 - `webhook.test`, `webhook.retry` — delivery operations
+- `email.retry` — re-queuing a failed outbound email
 
 `GET /api/admin/audit` (admin-only) lists the latest 200 entries, filterable by
 `actor`, `action`, and `entityType`. Failure ingestion is deliberately **not** audited
@@ -454,6 +471,8 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/webhooks/{id}/deliveries` | Bearer | Per-endpoint webhook delivery log (paginated) |
 | `POST` | `/api/webhooks/{id}/test` | Bearer | Queue a signed `devsup.ping` test delivery |
 | `POST` | `/api/webhooks/{id}/deliveries/{deliveryId}/retry` | Bearer | Re-queue a failed delivery |
+| `GET` | `/api/emails` | Bearer | Your email outbox, newest first (`sent` filter, paginated) |
+| `POST` | `/api/emails/{id}/retry` | Bearer | Re-queue a failed email message |
 | `GET` | `/api/notification-preferences` | Bearer | List your per-repository email delivery preferences |
 | `PUT` | `/api/notification-preferences` | Bearer | Upsert a repository's preference (`emailEnabled`, `mutedEvents`) |
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
@@ -468,6 +487,8 @@ Secrets at rest (GitHub access tokens) are encrypted with AES-256-GCM under
 identity used for pushes live under `Repairing:` (`IntervalSeconds`, `BatchSize`,
 `GitUserName`, `GitUserEmail`). Retention sweep cadence lives under `Retention:`
 (`WindowDays`, `IntervalHours`, `BatchSize`) and admin bootstrapping under `Admin:Emails`.
+Daily email digests are configured under `Digests:` (`Enabled`, `IntervalHours`,
+`MaxOpenTickets`).
 Override any of these via
 configuration/environment in a real deployment — the checked-in values are for
 development only.
@@ -498,6 +519,7 @@ push/PR to `master`.
 - **v0.10** *(done)* — write-audit trail, paginated failure history with date/repo/status filters and CSV export, webhook secret rotation
 - **v0.11** *(done)* — operator console: admin console in the dashboard, per-endpoint webhook delivery log, per-repository notification preferences
 - **v0.12** *(done)* — self-service & delivery ops: account profile/password API (audited), webhook ping test + failed-delivery retry, notification-preferences panel in the dashboard
+- **v0.13** *(done)* — delivery center: email outbox log + retry API, scheduled daily digest emails, Delivery center panel with outbox retry and webhook ping in the dashboard
 
 ---
 
