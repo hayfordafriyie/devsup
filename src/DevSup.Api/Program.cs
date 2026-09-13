@@ -1,6 +1,8 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using DevSup.Agent.Git;
+using DevSup.Agent.Repair;
 using DevSup.Api;
 using DevSup.Api.Auth;
 using DevSup.Core;
@@ -61,6 +63,19 @@ builder.Services.AddSingleton<IKeyProtector>(keyProtector);
 var github = builder.Configuration.GetSection("GitHub").Get<GitHubAuthSettings>() ?? new GitHubAuthSettings();
 builder.Services.AddSingleton(github);
 builder.Services.AddHttpClient<IGitHubGateway, GitHubGateway>(client => client.Timeout = TimeSpan.FromSeconds(15));
+
+var repairOptions = new RepairWorkerOptions
+{
+    IntervalSeconds = int.TryParse(builder.Configuration["Repairing:IntervalSeconds"], out var repairInterval) ? repairInterval : 20,
+    BatchSize = int.TryParse(builder.Configuration["Repairing:BatchSize"], out var repairBatch) ? repairBatch : 5,
+    GitUserName = builder.Configuration["Repairing:GitUserName"] ?? "DevSup Bot",
+    GitUserEmail = builder.Configuration["Repairing:GitUserEmail"] ?? "devsup@localhost"
+};
+builder.Services.AddSingleton(repairOptions);
+builder.Services.AddSingleton<IGitAdapter, GitCliAdapter>();
+builder.Services.AddSingleton<IRepairProvider, HeuristicRepairProvider>();
+builder.Services.AddScoped<RepairProcessor>();
+builder.Services.AddHostedService<RepairWorker>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>

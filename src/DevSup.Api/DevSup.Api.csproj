@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <ProjectReference Include="..\DevSup.Agent\DevSup.Agent.csproj" />
     <ProjectReference Include="..\DevSup.Core\DevSup.Core.csproj" />
     <ProjectReference Include="..\DevSup.Infrastructure\DevSup.Infrastructure.csproj" />
   </ItemGroup>
