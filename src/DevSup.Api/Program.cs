@@ -6,6 +6,7 @@ using DevSup.Agent.Git;
 using DevSup.Agent.PullRequests;
 using DevSup.Agent.Repair;
 using DevSup.Api;
+using DevSup.Api.Audit;
 using DevSup.Api.Auth;
 using DevSup.Api.Infra;
 using DevSup.Api.Notifications;
@@ -90,6 +91,7 @@ var healthOptions = new HealthCheckOptions
 builder.Services.AddSingleton(healthOptions);
 builder.Services.AddSingleton<IAppUrlProber, HttpAppUrlProber>();
 builder.Services.AddScoped<AppHealthChecker>();
+    builder.Services.AddScoped<AuditRecorder>();
 builder.Services.AddHostedService<AppHealthCheckWorker>();
 
 var retentionOptions = new RetentionOptions
@@ -250,7 +252,7 @@ app.MapPost("/api/users/register", async (RegisterUserRequest request, DevSupDbC
     return Results.Created($"/api/users/{user.Id}", new UserResponse(user.Id, user.Email, user.DisplayName));
 });
 
-app.MapPost("/api/users/login", async (LoginRequest request, DevSupDbContext db, IPasswordHasherService hasher, JwtTokenIssuer issuer, CancellationToken ct) =>
+app.MapPost("/api/users/login", async (LoginRequest request, DevSupDbContext db, IPasswordHasherService hasher, JwtTokenIssuer issuer, AuditRecorder audit, CancellationToken ct) =>
 {
     var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Email == request.Email.Trim().ToLowerInvariant(), ct);
     if (user is null || !hasher.Verify(request.Password ?? string.Empty, user.PasswordHash))
@@ -264,6 +266,7 @@ app.MapPost("/api/users/login", async (LoginRequest request, DevSupDbContext db,
     }
 
     var (token, expiresAt) = issuer.Issue(user);
+    await audit.RecordAsync(user.Id, user.Email, "user.login", "User", user.Id.ToString(), ct: ct);
     return Results.Ok(new LoginResponse(token, expiresAt, new UserResponse(user.Id, user.Email, user.DisplayName)));
 });
 
@@ -516,9 +519,11 @@ app.MapGet("/api/ai-keys", async (ClaimsPrincipal user, DevSupDbContext db, Canc
     return Results.Ok(keys);
 }).RequireAuthorization();
 
-app.MapPost("/api/ai-keys", async (AiKeyRequest request, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, CancellationToken ct) =>
+app.MapPost("/api/ai-keys", async (AiKeyRequest request, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, AuditRecorder audit, CancellationToken ct) =>
 {
     var ownerId = user.GetUserId();
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == ownerId, ct);
 
     if (string.IsNullOrWhiteSpace(request.Key) || request.Key.Length < 8)
     {
@@ -550,6 +555,8 @@ app.MapPost("/api/ai-keys", async (AiKeyRequest request, ClaimsPrincipal user, D
         };
         db.AiModelKeyBindings.Add(binding);
         await db.SaveChangesAsync(ct);
+        await audit.RecordAsync(actor.Id, actor.Email, "aiKey.create", "AiModelKeyBinding",
+            $"{request.Provider}:{request.Model}", after: mask, ct: ct);
         return Results.Created($"/api/ai-keys/{request.Provider}/{request.Model}",
             new AiKeyResponse(binding.Provider, binding.Model, binding.KeyMask, binding.UpdatedAt));
     }
@@ -560,6 +567,8 @@ app.MapPost("/api/ai-keys", async (AiKeyRequest request, ClaimsPrincipal user, D
         entry.Property(k => k.KeyMask).CurrentValue = mask;
         entry.Property(k => k.UpdatedAt).CurrentValue = now;
         await db.SaveChangesAsync(ct);
+        await audit.RecordAsync(actor.Id, actor.Email, "aiKey.update", "AiModelKeyBinding",
+            $"{request.Provider}:{request.Model}", before: existing.KeyMask, after: mask, ct: ct);
         return Results.Ok(new AiKeyResponse(existing.Provider, existing.Model, mask, now));
     }
 }).RequireAuthorization();
@@ -569,6 +578,7 @@ app.MapDelete("/api/ai-keys", async (
     string model,
     ClaimsPrincipal user,
     DevSupDbContext db,
+    AuditRecorder audit,
     CancellationToken ct) =>
 {
     if (!Enum.TryParse<AiModelProvider>(provider, ignoreCase: true, out var parsedProvider))
@@ -585,12 +595,16 @@ app.MapDelete("/api/ai-keys", async (
         return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "No such key binding.");
     }
 
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == ownerId, ct);
     db.AiModelKeyBindings.Remove(binding);
     await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "aiKey.delete", "AiModelKeyBinding",
+        $"{parsedProvider}:{model}", before: binding.KeyMask, ct: ct);
     return Results.NoContent();
 }).RequireAuthorization();
 
-app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
 {
     var ownerId = user.GetUserId();
 
@@ -626,6 +640,11 @@ app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsP
     {
         return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "This repository is already connected.");
     }
+
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == ownerId, ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "repository.connect", "ConnectedRepository",
+        repository.Id.ToString(), after: $"{request.CloneUrl} ({request.DefaultBranch})", ct: ct);
 
     return Results.Created($"/api/repositories/{repository.Id}",
         new RepositoryResponse(repository.Id, repository.Provider.ToString(), repository.CloneUrl, repository.DefaultBranch, repository.AppUrl, repository.RepairMode, repository.AppHealthy, repository.AppHealthCheckedAt, repository.AppHealthLastError));
@@ -878,7 +897,39 @@ app.MapGet("/api/admin/users", async (ClaimsPrincipal user, DevSupDbContext db, 
         x.Id, x.Email, x.DisplayName, x.IsAdmin, x.Active, x.CreatedAt, x.repositories, x.tickets)));
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/users/{id:guid}/deactivate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+app.MapGet("/api/admin/audit", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct,
+    string? actor = null, string? action = null, string? entityType = null) =>
+{
+    if (!await IsAdminAsync(user, db, ct))
+    {
+        return Results.Forbid();
+    }
+
+    var query = db.AuditEntries.AsNoTracking();
+    if (!string.IsNullOrWhiteSpace(actor))
+    {
+        query = query.Where(a => a.ActorEmail.Contains(actor));
+    }
+    if (!string.IsNullOrWhiteSpace(action))
+    {
+        query = query.Where(a => a.Action == action);
+    }
+    if (!string.IsNullOrWhiteSpace(entityType))
+    {
+        query = query.Where(a => a.EntityType == entityType);
+    }
+
+    var rows = await query
+        .OrderByDescending(a => a.Timestamp)
+        .Take(200)
+        .Select(a => new AuditEntryResponse(
+            a.Id, a.ActorEmail, a.Action, a.EntityType, a.EntityId, a.Before, a.After, a.IpAddress, a.Timestamp))
+        .ToListAsync(ct);
+
+    return Results.Ok(rows);
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/users/{id:guid}/deactivate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
 {
     if (!await IsAdminAsync(user, db, ct))
     {
@@ -893,10 +944,14 @@ app.MapPost("/api/admin/users/{id:guid}/deactivate", async (Guid id, ClaimsPrinc
 
     db.Entry(target).Property(u => u.Active).CurrentValue = false;
     await db.SaveChangesAsync(ct);
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == user.GetUserId(), ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "user.deactivate", "User", target.Id.ToString(),
+        before: true.ToString(), after: false.ToString(), ct: ct);
     return Results.NoContent();
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/users/{id:guid}/activate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+app.MapPost("/api/admin/users/{id:guid}/activate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
 {
     if (!await IsAdminAsync(user, db, ct))
     {
@@ -911,10 +966,14 @@ app.MapPost("/api/admin/users/{id:guid}/activate", async (Guid id, ClaimsPrincip
 
     db.Entry(target).Property(u => u.Active).CurrentValue = true;
     await db.SaveChangesAsync(ct);
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == user.GetUserId(), ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "user.activate", "User", target.Id.ToString(),
+        before: false.ToString(), after: true.ToString(), ct: ct);
     return Results.NoContent();
 }).RequireAuthorization();
 
-app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, CancellationToken ct) =>
+app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, AuditRecorder audit, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(request.Url) || !IsAbsoluteHttpUrl(request.Url))
     {
@@ -944,6 +1003,11 @@ app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipa
     db.WebhookEndpoints.Add(endpoint);
     await db.SaveChangesAsync(ct);
 
+    var wactor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == ownerId, ct);
+    await audit.RecordAsync(wactor.Id, wactor.Email, "webhook.create", "WebhookEndpoint",
+        endpoint.Id.ToString(), after: endpoint.Url, ct: ct);
+
     return Results.Created($"/api/webhooks/{endpoint.Id}",
         new CreateWebhookResponse(endpoint.Id, endpoint.Url, secret, ResolveEvents(endpoint.EventMask), endpoint.CreatedAt, endpoint.Name, endpoint.Channel));
 }).RequireAuthorization();
@@ -963,7 +1027,7 @@ app.MapGet("/api/webhooks", async (ClaimsPrincipal user, DevSupDbContext db, Can
     return Results.Ok(webhooks);
 }).RequireAuthorization();
 
-app.MapDelete("/api/webhooks/{id:guid}", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+app.MapDelete("/api/webhooks/{id:guid}", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
 {
     var webhook = await db.WebhookEndpoints.FirstOrDefaultAsync(w => w.Id == id && w.UserId == user.GetUserId(), ct);
     if (webhook is null)
@@ -973,6 +1037,10 @@ app.MapDelete("/api/webhooks/{id:guid}", async (Guid id, ClaimsPrincipal user, D
 
     db.WebhookEndpoints.Remove(webhook);
     await db.SaveChangesAsync(ct);
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == user.GetUserId(), ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "webhook.delete", "WebhookEndpoint",
+        webhook.Id.ToString(), before: webhook.Url, ct: ct);
     return Results.NoContent();
 }).RequireAuthorization();
 

@@ -167,3 +167,17 @@ public sealed record WebhookDelivery
     public string? LastError { get; init; }
     public DateTimeOffset CreatedAt { get; init; }
 }
+
+public sealed record AuditEntry
+{
+    public required Guid Id { get; init; }
+    public required Guid ActorUserId { get; init; }
+    public required string ActorEmail { get; init; }
+    public required string Action { get; init; }
+    public required string EntityType { get; init; }
+    public string? EntityId { get; init; }
+    public string? Before { get; init; }
+    public string? After { get; init; }
+    public string? IpAddress { get; init; }
+    public DateTimeOffset Timestamp { get; init; }
+}

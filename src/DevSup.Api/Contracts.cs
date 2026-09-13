@@ -104,3 +104,14 @@ public sealed record AdminOverviewResponse(
     int TotalFailures,
     int OpenTickets,
     int WebhookEndpoints);
+
+public sealed record AuditEntryResponse(
+    Guid Id,
+    string ActorEmail,
+    string Action,
+    string EntityType,
+    string? EntityId,
+    string? Before,
+    string? After,
+    string? IpAddress,
+    DateTimeOffset Timestamp);

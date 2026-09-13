@@ -17,6 +17,8 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
     public DbSet<WebhookEndpoint> WebhookEndpoints => Set<WebhookEndpoint>();
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
 
+    public DbSet<AuditEntry> AuditEntries => Set<AuditEntry>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>(entity =>
@@ -123,6 +125,21 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(d => d.Payload).HasMaxLength(16_384).IsRequired();
             entity.Property(d => d.LastError).HasMaxLength(2048);
             entity.HasIndex(d => new { d.Sent, d.CreatedAt });
+        });
+
+        modelBuilder.Entity<AuditEntry>(entity =>
+        {
+            entity.ToTable("audit_entries");
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.ActorEmail).HasMaxLength(256).IsRequired();
+            entity.Property(a => a.Action).HasMaxLength(64).IsRequired();
+            entity.Property(a => a.EntityType).HasMaxLength(64).IsRequired();
+            entity.Property(a => a.EntityId).HasMaxLength(64);
+            entity.Property(a => a.Before).HasMaxLength(4096);
+            entity.Property(a => a.After).HasMaxLength(4096);
+            entity.Property(a => a.IpAddress).HasMaxLength(64);
+            entity.HasIndex(a => new { a.Timestamp });
+            entity.HasIndex(a => new { a.ActorUserId, a.Timestamp });
         });
 
         base.OnModelCreating(modelBuilder);
