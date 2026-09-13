@@ -5,13 +5,14 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.11** — the **operator console & delivery controls** release. The
-> dashboard gained an **admin console**: suspend/restore tenants, browse the audit trail,
-> review and export failure history without leaving `/dashboard/`. Webhook endpoints now
-> expose a **per-endpoint delivery log** (`GET /api/webhooks/{id}/deliveries`) so you can
-> audit every event, retry state and failure. And per-repository **notification
-> preferences** give you a master email on/off switch plus per-event email muting
-> (independent of webhook fan-out). 133 tests passing.
+> Project status: **v0.12** — the **self-service & delivery ops** release. Users can now
+> manage their own account (`GET`/`PUT /api/account` profile, `POST
+> /api/account/password` to rotate the password, each change audited), and webhook
+> operators get two power-ups: `POST /api/webhooks/{id}/test` pushes a signed
+> `devsup.ping` payload through an endpoint end-to-end, and `POST
+> /api/webhooks/{id}/deliveries/{deliveryId}/retry` re-queues a failed delivery without
+> recreating the endpoint. The dashboard gained a **notification-preferences** panel so
+> per-repo email control is a click away. 139 tests passing.
 
 ---
 
@@ -147,6 +148,14 @@ An email outbox (`EmailMessage`) decouples notification from transport:
 Sending is the responsibility of `DevSup.Infrastructure` (SMTP first; transactional
 providers later). Failed sends are retried, never silently dropped.
 
+### Accounts & passwords (v0.12)
+
+Self-service is self-service with a paper trail. `GET /api/account` returns your profile
+(email, display name, admin/active flags, created at); `PUT /api/account` updates your
+display name; `POST /api/account/password` verifies the current password and sets a new
+one (min 8 characters). Both write operations are persisted to the audit trail
+(`account.profileUpdate`, `account.passwordChange`).
+
 ### Notification preferences (v0.11)
 
 Email is opt-out per repository. `GET /api/notification-preferences` lists your
@@ -155,7 +164,8 @@ preferences; `PUT /api/notification-preferences` upserts one. Each preference ha
 events *per event* — `failureDetected`, `notCodeError`, `fixPushed`, `fixPendingReview`,
 `needsHumanReview`. A missing preference row means "all emails on". Preferences gate
 **email only**; webhook fan-out is governed by each endpoint's own `events` mask, so you
-can silence your inbox without silencing your Slack channel.
+can silence your inbox without silencing your Slack channel. The dashboard's
+**Preferences** panel edits the same settings with checkboxes.
 
 ## 8. Webhooks, channels & health checks
 
@@ -170,7 +180,7 @@ Each delivery `POST`s a JSON payload with headers:
 
 - `X-DevSup-Signature` — `sha256=<hex>` HMAC over the raw body using your secret
 - `X-DevSup-Event` — camelCase event name (`failureDetected`, `fixPushed`,
-  `fixPendingReview`, `needsHumanReview`, `notCodeError`)
+  `fixPendingReview`, `needsHumanReview`, `notCodeError`), or `ping` for test payloads
 
 Endpoints declare a `channel`:
 
@@ -261,6 +271,8 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
 - `repository.connect`, `webhook.create`, `webhook.delete`, `webhook.rotate`,
   `aiKey.create`, `aiKey.update`, `aiKey.delete` — configuration writes
 - `user.deactivate`, `user.activate` — admin account changes
+- `account.profileUpdate`, `account.passwordChange` — self-service profile/password changes
+- `webhook.test`, `webhook.retry` — delivery operations
 
 `GET /api/admin/audit` (admin-only) lists the latest 200 entries, filterable by
 `actor`, `action`, and `entityType`. Failure ingestion is deliberately **not** audited
@@ -288,6 +300,19 @@ one endpoint — every event fanned out to it with its status (`queued` / `deliv
 `failed`), attempt count, last HTTP status/error, HMAC signature, and timestamps.
 Newest first, paginated (`page` / `pageSize`, max 100). The same data the admin console
 and email outbox draw on, per endpoint.
+
+### Testing & retrying (v0.12)
+
+- `POST /api/webhooks/{id}/test` — fires a synthetic **`devsup.ping`** through the full
+  delivery path: queued as a normal outbox row, signed with the endpoint secret, POSTed
+  to the URL exactly like a real event (Slack/Teams formatted per channel). Great for
+  confirming the receiver parses your HMAC headers.
+- `POST /api/webhooks/{id}/deliveries/{deliveryId}/retry` — re-queues a failed delivery:
+  resets its attempt count and last error so the outbox worker picks it up again, without
+  touching the endpoint or its secret. Already-sent deliveries reject retry with `409`.
+
+Both are ownership-scoped like every other webhook operation, and both are audited
+(`webhook.test`, `webhook.retry`).
 
 ## 12. Security & sanitization
 
@@ -402,6 +427,9 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/` | — | Health check |
 | `POST` | `/api/users/register` | — | Create account (email, display name, password ≥ 8 chars) |
 | `POST` | `/api/users/login` | — | Exchange credentials for a JWT |
+| `GET` | `/api/account` | Bearer | View your profile (email, name, admin/active flags) |
+| `PUT` | `/api/account` | Bearer | Update your display name |
+| `POST` | `/api/account/password` | Bearer | Change your password (current password required) |
 | `GET` | `/api/auth/github/login` | — | Start GitHub OAuth (redirects to GitHub) |
 | `GET` | `/api/auth/github/callback` | — | GitHub OAuth callback → links account, returns JWT |
 | `GET` | `/api/auth/gitlab/login` | — | Start GitLab OAuth (redirects to GitLab) |
@@ -424,6 +452,8 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `DELETE` | `/api/webhooks/{id}` | Bearer | Remove a webhook endpoint |
 | `POST` | `/api/webhooks/{id}/rotate` | Bearer | Replace the signing secret and receive the new value once |
 | `GET` | `/api/webhooks/{id}/deliveries` | Bearer | Per-endpoint webhook delivery log (paginated) |
+| `POST` | `/api/webhooks/{id}/test` | Bearer | Queue a signed `devsup.ping` test delivery |
+| `POST` | `/api/webhooks/{id}/deliveries/{deliveryId}/retry` | Bearer | Re-queue a failed delivery |
 | `GET` | `/api/notification-preferences` | Bearer | List your per-repository email delivery preferences |
 | `PUT` | `/api/notification-preferences` | Bearer | Upsert a repository's preference (`emailEnabled`, `mutedEvents`) |
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
@@ -467,6 +497,7 @@ push/PR to `master`.
 - **v0.9** *(done)* — platform admin role + account suspension, dashboard webhook channel/name routing, event retention worker
 - **v0.10** *(done)* — write-audit trail, paginated failure history with date/repo/status filters and CSV export, webhook secret rotation
 - **v0.11** *(done)* — operator console: admin console in the dashboard, per-endpoint webhook delivery log, per-repository notification preferences
+- **v0.12** *(done)* — self-service & delivery ops: account profile/password API (audited), webhook ping test + failed-delivery retry, notification-preferences panel in the dashboard
 
 ---
 
