@@ -109,6 +109,67 @@ public sealed class DigestTests : IAsyncLifetime
         return await processor.RunAsync(CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Digest_GroupsOwnedAndSharedRepositories()
+    {
+        var ownerToken = await Helpers.LoginAndGetTokenAsync(_client, "digest-grp-owner@test.dev", "Grp Owner");
+        var ownerRepo = await Helpers.CreateRepositoryAsync(_client, ownerToken, "https://github.com/acme/grp-owner.git");
+        await Helpers.LoginAndGetTokenAsync(_client, "digest-grp-other@test.dev", "Grp Other");
+
+        var ownerId = await UserIdAsync("digest-grp-owner@test.dev");
+        var otherId = await UserIdAsync("digest-grp-other@test.dev");
+        var sharedRepo = await SeedSharedRepoAsync(otherId, ownerId, "https://github.com/acme/grp-shared.git");
+
+        await SeedActivityAsync(ownerRepo, DateTimeOffset.UtcNow, openTickets: 1, fixedShas: 0);
+        await SeedActivityAsync(sharedRepo, DateTimeOffset.UtcNow, openTickets: 2, fixedShas: 0);
+        await DeactivateAsync(otherId);
+
+        var generated = await RunDigestAsync(intervalHours: 24);
+        Assert.Equal(1, generated);
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var email = await db.EmailMessages.AsNoTracking().SingleAsync();
+        Assert.Equal("digest-grp-owner@test.dev", email.To);
+        Assert.Contains("Your repositories (1)", email.HtmlBody);
+        Assert.Contains("Shared with you (1)", email.HtmlBody);
+        Assert.Contains("3 open ticket(s)", email.Subject);
+    }
+
+    private async Task<Guid> SeedSharedRepoAsync(Guid ownerUserId, Guid memberUserId, string cloneUrl)
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var repo = new ConnectedRepository
+        {
+            Id = Guid.NewGuid(),
+            OwnerUserId = ownerUserId,
+            Provider = GitProvider.GitHub,
+            CloneUrl = cloneUrl,
+            DefaultBranch = "main",
+            ConnectedAt = DateTimeOffset.UtcNow
+        };
+        db.ConnectedRepositories.Add(repo);
+        db.RepositoryMembers.Add(new RepositoryMember
+        {
+            RepositoryId = repo.Id,
+            UserId = memberUserId,
+            Role = MemberRole.Operator,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        return repo.Id;
+    }
+
+    private async Task DeactivateAsync(Guid userId)
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var user = await db.Users.SingleAsync(u => u.Id == userId);
+        db.Entry(user).Property(u => u.Active).CurrentValue = false;
+        await db.SaveChangesAsync();
+    }
+
     private async Task<Guid> UserIdAsync(string email)
     {
         await using var scope = _factory.Services.CreateAsyncScope();

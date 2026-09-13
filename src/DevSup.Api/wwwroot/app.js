@@ -201,6 +201,8 @@
         return parts.length === 2 ? parts[1] : action;
     }
 
+    var activityRepoId = null;
+
     function loadRepositoryActivity(repoId) {
         return fetch("/api/repositories/" + repoId + "/activity", {
             headers: { Authorization: "Bearer " + token }
@@ -208,6 +210,7 @@
             if (!response.ok) throw new Error("You do not have access to this repository");
             return response.json();
         }).then(function (items) {
+            activityRepoId = repoId;
             var section = document.getElementById("repo-activity-panel");
             var list = document.getElementById("repo-activity-list");
             if (items.length === 0) {
@@ -736,6 +739,26 @@
         button = event.target.closest("[data-repo-activity]");
         if (button) {
             loadRepositoryActivity(button.getAttribute("data-repo-activity")).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-activity-export]");
+        if (button) {
+            if (!activityRepoId) return;
+            fetch("/api/repositories/" + activityRepoId + "/activity/export", {
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to export activity");
+                return response.blob();
+            }).then(function (blob) {
+                var url = URL.createObjectURL(blob);
+                var link = document.createElement("a");
+                link.href = url;
+                link.download = "devsup-activity.csv";
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+            }).catch(function (e) { showError(e.message); });
             return;
         }
         button = event.target.closest("[data-activity-close]");

@@ -31,19 +31,26 @@ public sealed class DigestProcessor(
 
         foreach (var user in users)
         {
-            var repoIds = await db.ConnectedRepositories.AsNoTracking()
-                .Where(r => (r.OwnerUserId == user.Id
-                    || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == user.Id))
+            var ownedIds = await db.ConnectedRepositories.AsNoTracking()
+                .Where(r => r.OwnerUserId == user.Id && !r.Paused && !r.Archived)
+                .Select(r => r.Id)
+                .ToListAsync(ct);
+            var sharedIds = await db.ConnectedRepositories.AsNoTracking()
+                .Where(r => r.OwnerUserId != user.Id
+                    && db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == user.Id)
                     && !r.Paused && !r.Archived)
                 .Select(r => r.Id)
                 .ToListAsync(ct);
+            var repoIds = ownedIds.Concat(sharedIds).ToList();
             if (repoIds.Count == 0)
             {
                 continue;
             }
 
-            var failures = await db.FailureEvents.AsNoTracking()
-                .CountAsync(f => repoIds.Contains(f.RepositoryId) && f.OccurredAt >= window, ct);
+            var recentFailureRepoIds = await db.FailureEvents.AsNoTracking()
+                .Where(f => repoIds.Contains(f.RepositoryId) && f.OccurredAt >= window)
+                .Select(f => f.RepositoryId)
+                .ToListAsync(ct);
 
             var open = await db.RepairTickets.AsNoTracking()
                 .Where(t => repoIds.Contains(t.RepositoryId)
@@ -54,12 +61,22 @@ public sealed class DigestProcessor(
                         || t.Status == TicketStatus.FixPendingReview))
                 .ToListAsync(ct);
 
-            var fixedRecently = await db.RepairTickets.AsNoTracking()
-                .CountAsync(t => repoIds.Contains(t.RepositoryId)
+            var recentFixRepoIds = await db.RepairTickets.AsNoTracking()
+                .Where(t => repoIds.Contains(t.RepositoryId)
                     && t.Status == TicketStatus.FixPushed
-                    && t.UpdatedAt >= window, ct);
+                    && t.UpdatedAt >= window)
+                .Select(t => t.RepositoryId)
+                .ToListAsync(ct);
 
-            if (failures == 0 && open.Count == 0 && fixedRecently == 0)
+            var ownedSet = ownedIds.ToHashSet();
+            var all = new DigestCounts(recentFailureRepoIds.Count, open.Count, recentFixRepoIds.Count);
+            var owned = new DigestCounts(
+                recentFailureRepoIds.Count(id => ownedSet.Contains(id)),
+                open.Count(t => ownedSet.Contains(t.RepositoryId)),
+                recentFixRepoIds.Count(id => ownedSet.Contains(id)));
+            var shared = new DigestCounts(all.Failures - owned.Failures, all.Open - owned.Open, all.Fixed - owned.Fixed);
+
+            if (all.Failures == 0 && all.Open == 0 && all.Fixed == 0)
             {
                 continue;
             }
@@ -69,8 +86,8 @@ public sealed class DigestProcessor(
                 Id = Guid.NewGuid(),
                 UserId = user.Id,
                 To = user.Email,
-                Subject = $"DevSup daily summary: {failures} failure(s), {open.Count} open ticket(s), {fixedRecently} fix(es)",
-                HtmlBody = BuildDigest(user, repoIds.Count, failures, open, fixedRecently),
+                Subject = $"DevSup daily summary: {all.Failures} failure(s), {all.Open} open ticket(s), {all.Fixed} fix(es)",
+                HtmlBody = BuildDigest(user, ownedIds.Count, sharedIds.Count, all, owned, shared, open),
                 CreatedAt = now
             });
             generated++;
@@ -84,17 +101,28 @@ public sealed class DigestProcessor(
         return generated;
     }
 
-    private string BuildDigest(User user, int repositoryCount, int failures, List<RepairTicket> open, int fixedRecently)
+    private string BuildDigest(User user, int ownedCount, int sharedCount, DigestCounts all, DigestCounts owned, DigestCounts shared, List<RepairTicket> open)
     {
         var sb = new StringBuilder();
         sb.Append("<h3>DevSup daily summary</h3>");
+        var scope = sharedCount > 0
+            ? $"<strong>{ownedCount + sharedCount}</strong> repositories ({ownedCount} yours, {sharedCount} shared with you)"
+            : $"<strong>{ownedCount}</strong> connected repositories";
         sb.Append($"<p>Hi <strong>{Escape(user.DisplayName)}</strong>, here's what happened across your " +
-                  $"<strong>{repositoryCount}</strong> connected repositories in the last <strong>{options.IntervalHours}</strong> hour(s):</p>");
+                  $"{scope} in the last <strong>{options.IntervalHours}</strong> hour(s):</p>");
         sb.Append("<ul>");
-        sb.Append($"<li>Failures detected: <strong>{failures}</strong></li>");
-        sb.Append($"<li>Open repair tickets: <strong>{open.Count}</strong></li>");
-        sb.Append($"<li>Fixes pushed: <strong>{fixedRecently}</strong></li>");
+        sb.Append($"<li>Failures detected: <strong>{all.Failures}</strong></li>");
+        sb.Append($"<li>Open repair tickets: <strong>{all.Open}</strong></li>");
+        sb.Append($"<li>Fixes pushed: <strong>{all.Fixed}</strong></li>");
         sb.Append("</ul>");
+
+        if (sharedCount > 0)
+        {
+            sb.Append($"<h4>Your repositories ({ownedCount})</h4>");
+            sb.Append(CountsList(owned));
+            sb.Append($"<h4>Shared with you ({sharedCount})</h4>");
+            sb.Append(CountsList(shared));
+        }
 
         if (open.Count > 0)
         {
@@ -116,6 +144,15 @@ public sealed class DigestProcessor(
         sb.Append("<p style=\"color: #888\">Automated summary · <em>DevSup</em></p>");
         return sb.ToString();
     }
+
+    private static string CountsList(DigestCounts counts)
+        => "<ul>" +
+           $"<li>Failures detected: <strong>{counts.Failures}</strong></li>" +
+           $"<li>Open repair tickets: <strong>{counts.Open}</strong></li>" +
+           $"<li>Fixes pushed: <strong>{counts.Fixed}</strong></li>" +
+           "</ul>";
+
+    private readonly record struct DigestCounts(int Failures, int Open, int Fixed);
 
     private static string Escape(string? value)
         => (value ?? string.Empty)

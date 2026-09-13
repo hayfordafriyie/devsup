@@ -1106,6 +1106,49 @@ app.MapGet("/api/repositories/{id:guid}/activity", async (Guid id, ClaimsPrincip
     return Results.Ok(rows);
 }).RequireAuthorization();
 
+app.MapGet("/api/repositories/{id:guid}/activity/export", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var hasAccess = await db.ConnectedRepositories.AsNoTracking()
+        .AnyAsync(r => r.Id == id
+            && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)), ct);
+    if (!hasAccess)
+    {
+        return Results.NotFound();
+    }
+
+    var repoId = id.ToString();
+    var memberPrefix = repoId + "/";
+    var ticketIds = await db.RepairTickets.AsNoTracking()
+        .Where(t => t.RepositoryId == id)
+        .Select(t => t.Id.ToString())
+        .ToListAsync(ct);
+
+    var rows = await (from a in db.AuditEntries.AsNoTracking()
+                      join u in db.Users.AsNoTracking() on a.ActorUserId equals u.Id into uj
+                      from u in uj.DefaultIfEmpty()
+                      where (a.EntityType == "ConnectedRepository" && a.EntityId == repoId)
+                          || (a.EntityType == "RepositoryMember" && a.EntityId != null && a.EntityId.StartsWith(memberPrefix))
+                          || (a.EntityType == "RepairTicket" && a.EntityId != null && ticketIds.Contains(a.EntityId))
+                      orderby a.Timestamp
+                      select new { a.Timestamp, a.Action, ActorEmail = u != null ? u.Email : a.ActorEmail, a.Before, a.After })
+        .ToListAsync(ct);
+
+    var csv = new StringBuilder();
+    csv.AppendLine("timestampUtc,action,actorEmail,before,after");
+    foreach (var row in rows)
+    {
+        csv.Append(CsvEscape(row.Timestamp.ToString("O"))).Append(',');
+        csv.Append(CsvEscape(row.Action)).Append(',');
+        csv.Append(CsvEscape(row.ActorEmail)).Append(',');
+        csv.Append(CsvEscape(row.Before)).Append(',');
+        csv.AppendLine(CsvEscape(row.After));
+    }
+
+    var bytes = Encoding.UTF8.GetBytes(csv.ToString());
+    return Results.File(bytes, "text/csv", $"devsup-activity-{id}-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+}).RequireAuthorization();
+
 app.MapPost("/api/repositories/bulk", async (BulkRepositoryActionRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
 {
     var ownerId = user.GetUserId();

@@ -90,6 +90,33 @@ public sealed class RepositoryActivityTests : IAsyncLifetime
         Assert.DoesNotContain(items!, i => i.Action == "repository.share");
     }
 
+    [Fact]
+    public async Task ActivityExport_ReturnsCsv()
+    {
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "act-export@test.dev", "Act Export");
+        var repoId = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/act-export.git");
+        await PostAsync($"/api/repositories/{repoId}/pause", token);
+
+        var response = await GetAsync($"/api/repositories/{repoId}/activity/export", token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType!.MediaType);
+        var csv = await response.Content.ReadAsStringAsync();
+        Assert.StartsWith("timestampUtc,action,actorEmail,before,after", csv);
+        Assert.Contains("repository.connect", csv);
+        Assert.Contains("repository.pause", csv);
+        Assert.Contains("act-export@test.dev", csv);
+    }
+
+    [Fact]
+    public async Task ActivityExport_NonMember_Returns404()
+    {
+        var ownerToken = await Helpers.LoginAndGetTokenAsync(_client, "act-exp-owner@test.dev", "Act Exp Owner");
+        var repoId = await Helpers.CreateRepositoryAsync(_client, ownerToken, "https://github.com/acme/act-exp.git");
+        var otherToken = await Helpers.LoginAndGetTokenAsync(_client, "act-exp-other@test.dev", "Act Exp Other");
+
+        Assert.Equal(HttpStatusCode.NotFound, (await GetAsync($"/api/repositories/{repoId}/activity/export", otherToken)).StatusCode);
+    }
+
     private async Task<HttpResponseMessage> GetAsync(string path, string token)
     {
         var request = new HttpRequestMessage(HttpMethod.Get, path);
