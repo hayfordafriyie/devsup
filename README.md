@@ -5,15 +5,13 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.6** — on top of v0.5 (BYO AI keys, GitLab support, key
-> management) and v0.4/v0.3/v0.2 (agent repair loop, SMTP outbox, GitHub OAuth,
-> SQLite, JWT accounts, tickets), the consumer SDK middleware now **negotiates a
-> schema version** with the API (`X-DevSup-Schema-Version`) and **redacts secrets**
-> from captured payloads before they leave your app, the API enforces that version
-> and re-redacts server-side as defense in depth, and connected repositories can
-> opt into a **pull-request repair flow**: instead of pushing straight to the
-> default branch, the agent lands the fix on a feature branch, opens a PR/MR on
-> GitHub or GitLab, and emails you a review link. 76 tests passing.
+> Project status: **v0.7** — on top of v0.6 (consumer schema versioning, payload
+> sanitization, pull-request repair flow), the platform can now **probe the app URL
+> you linked to each repository**, spot a live outage, and feed it through the same
+> triage/repair pipeline without your SDK installed; every ticket transition can push
+> **HMAC-signed webhook notifications** to your own endpoints; a **cross-repository
+> overview API and a self-contained dashboard UI** at `/dashboard/` aggregate health
+> and repair state across all your repos. 98 tests passing.
 
 ---
 
@@ -26,11 +24,12 @@ instead of digging through logs.
 5. [Harry vs. machine-readable errors](#5-code-errors-vs-not-code-errors)
 6. [Bring-your-own AI keys](#6-bring-your-own-ai-keys)
 7. [Email notifications](#7-email-notifications)
-8. [Security & sanitization](#8-security--sanitization)
-9. [Repository layout](#9-repository-layout)
-10. [Data model](#10-data-model)
-11. [Local development](#11-local-development)
-12. [Roadmap](#12-roadmap)
+8. [Webhooks & health checks](#8-webhooks--health-checks)
+9. [Security & sanitization](#9-security--sanitization)
+10. [Repository layout](#10-repository-layout)
+11. [Data model](#11-data-model)
+12. [Local development](#12-local-development)
+13. [Roadmap](#13-roadmap)
 
 ---
 
@@ -47,6 +46,8 @@ instead of digging through logs.
   root cause, applies a patch, and runs `git add`/`commit`/`push`.
 - The database entry is marked **fixed** on success, with a status and the commit SHA.
 - **Emails** keep the user informed: error detected → recommended fix → fix pushed.
+- A **browser dashboard** at `/dashboard/` shows every repository, its health, and all
+  repair tickets in one place.
 
 ## 2. The problem
 
@@ -143,7 +144,40 @@ An email outbox (`EmailMessage`) decouples notification from transport:
 Sending is the responsibility of `DevSup.Infrastructure` (SMTP first; transactional
 providers later). Failed sends are retried, never silently dropped.
 
-## 8. Security & sanitization
+## 8. Webhooks & health checks
+
+### Webhook notifications
+
+Every ticket transition can be mirrored to your own HTTP endpoints. Register an
+endpoint with `POST /api/webhooks` and receive an **HMAC-SHA256 signature** you must
+store — the signing secret is returned once and never re-exposed; it is stored
+encrypted at rest.
+
+Each delivery `POST`s a JSON payload with headers:
+
+- `X-DevSup-Signature` — `sha256=<hex>` HMAC over the raw body using your secret
+- `X-DevSup-Event` — camelCase event name (`failureDetected`, `fixPushed`,
+  `fixPendingReview`, `needsHumanReview`, `notCodeError`)
+
+Events are opt-in per endpoint (`events` list on create, all by default). Failed
+deliveries are retried from an outbox (`Webhooks:` interval / `MaxAttempts`, default
+8 tries); deleted or deactivated endpoints are drained silently.
+
+### External app-URL health checks
+
+For each repository you optionally provide the URL of the app/backend it serves
+(`appUrl`). A background prober (`HealthChecks:` interval, default 300 s) does a
+`GET` on that URL: a non-2xx, timeout, or transport error marks the repository
+**unhealthy**, and the first transition into an unhealthy state is ingested as a
+failure event (`Source=appHealthCheck`) — classified, ticketed, emailed, and mirrored
+to webhooks exactly like an SDK-reported failure. Consecutive failures don't create
+duplicate tickets; recovery to healthy is recorded silently.
+
+The `GET /api/overview` endpoint (and the dashboard) aggregates this health state and
+your ticket counts across **all** repositories, so one home screen covers the whole
+fleet.
+
+## 9. Security & sanitization
 
 - **Payload scrubbing** at capture time: `Authorization`, `X-Api-Key`, `Cookie`,
   `Set-Cookie` headers and secrets stripped before a failure event is stored.
@@ -155,7 +189,7 @@ providers later). Failed sends are retried, never silently dropped.
   PatchProposed → FixPushed → FixVerified → Closed* so every auto-mutation is visible
   and reversible.
 
-## 9. Repository layout
+## 10. Repository layout
 
 ```
 devsup/
@@ -170,19 +204,22 @@ devsup/
 └─ README.md
 ```
 
-## 10. Data model (EF Core + SQLite, migrations applied at startup)
+## 11. Data model (EF Core + SQLite, migrations applied at startup)
 
 - `Users` — account, email, display name, **PBKDF2 password hash**, created timestamp
-- `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL
+- `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`)
 - `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
-- `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA, last agent error
+- `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA, last agent error, optional PR/MR URL
 - `EmailMessages` — outbox (to, subject, html body, sent, created at)
+- `WebhookEndpoints` — user, destination URL, events mask, **encrypted signing secret**, active
+- `WebhookDeliveries` — outbox (webhook, event, payload, attempts, last error, sent)
 
 Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
-`AddAiModelKeyMaskUpdatedAtUniqueIndex`).
+`AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`).
 
 ### The repair agent (v0.4)
 
@@ -230,7 +267,7 @@ explanatory "not a code error — no patch scheduled" email instead of a repair 
 OAuth only works when the provider's `ClientId` and `ClientSecret` are configured
 (`GitHub:` / `GitLab:`); authorize/token/user URLs are overridable per environment.
 
-## 11. Local development
+## 12. Local development
 
 ```bash
 dotnet restore
@@ -260,6 +297,12 @@ automatically at startup (a `devsup.db` file is created next to the repo).
 | `GET` | `/api/ai-keys` | Bearer | List your AI key bindings (masked) |
 | `POST` | `/api/ai-keys` | Bearer | Add or update an AI key binding |
 | `DELETE` | `/api/ai-keys` | Bearer | Delete an AI key binding |
+| `GET` | `/api/overview` | Bearer | Cross-repo health + ticket summary (dashboard feed) |
+| `GET` | `/api/tickets?repositoryId=` | Bearer | Filter tickets to one repository |
+| `POST` | `/api/webhooks` | Bearer | Register a webhook endpoint (returns the signing secret once) |
+| `GET` | `/api/webhooks` | Bearer | List webhook endpoints |
+| `DELETE` | `/api/webhooks/{id}` | Bearer | Remove a webhook endpoint |
+| `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
 
 Secrets at rest (GitHub access tokens) are encrypted with AES-256-GCM under
 `Security:DataProtectionKey`. JWT settings live under `Jwt`. Agent cadence and the commit
@@ -280,7 +323,7 @@ docker run --rm -p 8080:8080 devsup-api
 `.github/workflows/ci.yml` runs `restore` → `build` → `test` in Release on every
 push/PR to `master`.
 
-## 12. Roadmap
+## 13. Roadmap
 
 - **v0.1** — solution scaffold, domain model, failure classifier + tests
 - **v0.2** *(done)* — SQLite persistence + migrations, JWT accounts, connect repo, ingest endpoint, classifier triage, tickets, email outbox
@@ -288,7 +331,8 @@ push/PR to `master`.
 - **v0.4** *(done)* — agent repair loop: investigate → template patch → commit → push, ticket status updates, "fixed"/"needs review" emails
 - **v0.5** *(done)* — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, key management API
 - **v0.6** *(done)* — consumer versioning of the middleware (`X-DevSup-Schema-Version`), payload sanitization hardening, PR-based (opt-in) repair flow
-- **v0.7** — multi-repo, dashboards, Slack/webhook notifications, external app-URL checks
+- **v0.7** *(done)* — webhook notifications (HMAC-signed), external app-URL health checks, cross-repository `/api/overview`, dashboard UI at `/dashboard/`
+- **v0.8** — multi-tenant admin, PostgreSQL, transaction/event replay, notification routing (Slack/Teams)
 
 ---
 
