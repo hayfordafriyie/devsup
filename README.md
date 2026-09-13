@@ -5,11 +5,12 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.24** — the **digest cadence** release. Each user now chooses a
-> **daily** or **weekly** digest (`digestFrequency` on `PUT /api/account`); the worker
-> tracks `LastDigestSentAt` and widens the reporting window to the chosen cadence, so a
-> weekly digest covers seven days. The dashboard Account panel exposes a cadence
-> selector. 222 tests passing.
+> Project status: **v0.25** — the **admin fleet health** release. Platform admins get a
+> cross-tenant repository view: `GET /api/admin/repositories` lists every repository
+> with owner, health, pause/archive flags, open tickets and failure counts (filterable
+> by health/owner/paused/archived), and `GET /api/admin/overview` now includes a health
+> breakdown. The dashboard admin console gains a **Fleet health** panel. 226 tests
+> passing.
 
 ---
 
@@ -401,9 +402,15 @@ comma-separated `Admin:Emails` configuration to `IsAdmin = true`, so the first a
 always created the moment that account registers.
 
 - `GET /api/admin/overview` — platform totals: users (total/active), repositories,
-  failures, open tickets, webhook endpoints.
+  failures, open tickets, webhook endpoints, plus a **health breakdown**
+  (healthy / unhealthy / unchecked / paused / archived repositories).
 - `GET /api/admin/users` — every user with `isAdmin`, `active`, and per-user
   repository/ticket counts.
+- `GET /api/admin/repositories` — cross-tenant fleet view (v0.25): every repository
+  with its owner email, provider, app-health state, pause/archive flags, open-ticket
+  count and total failures. Paginated (`page` / `pageSize` ≤ 200), filterable by
+  `health` (`healthy` / `unhealthy` / `unchecked`), `owner` email, `paused` and
+  `archived`.
 - `POST /api/admin/users/{id}/deactivate` and `.../activate` — suspend / restore a
   tenant. A deactivated account can no longer sign in (`403` at login).
 
@@ -411,7 +418,8 @@ Admin endpoints are authorization-guarded per request (a user must be `IsAdmin`)
 non-admin always gets `403` regardless of route knowledge. In v0.11 the **admin console**
 moved into the dashboard: an admin sees an `Admin` section in `/dashboard/` to
 suspend/restore users, page through the audit trail, and review + CSV-export failure
-history without touching the API directly.
+history without touching the API directly. Since v0.25 the console also carries a
+**Fleet health** panel — a health summary plus the per-repository table described above.
 
 ### Event retention & archiving
 
@@ -665,7 +673,8 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/notification-preferences` | Bearer | List your per-repository email delivery preferences |
 | `PUT` | `/api/notification-preferences` | Bearer | Upsert a repository's preference (`emailEnabled`, `mutedEvents`) |
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
-| `GET` | `/api/admin/overview` | Bearer + admin | Platform-wide totals (users, repos, failures, tickets, webhooks) |
+| `GET` | `/api/admin/overview` | Bearer + admin | Platform-wide totals + repository health breakdown |
+| `GET` | `/api/admin/repositories` | Bearer + admin | Cross-tenant fleet view (`health`, `owner`, `paused`, `archived` filters; paginated) |
 | `GET` | `/api/admin/users` | Bearer + admin | List every user with admin/active flags and per-user counts |
 | `POST` | `/api/admin/users/{id}/deactivate` | Bearer + admin | Suspend an account (blocks future sign-in) |
 | `POST` | `/api/admin/users/{id}/activate` | Bearer + admin | Restore a suspended account |
@@ -721,6 +730,7 @@ push/PR to `master`.
 - **v0.22** *(done)* — bulk repository actions: `POST /api/repositories/bulk` applies pause/unpause/archive/unarchive to up to 100 owned repos with per-repo results (ok/unchanged/forbidden/notFound) and per-repo audits; dashboard selection checkboxes + bulk action bar
 - **v0.23** *(done)* — reporting: daily digests group activity into "Your repositories" vs "Shared with you" sections; repository activity feed gains a CSV export (`GET /api/repositories/{id}/activity/export`) with a dashboard Export CSV button
 - **v0.24** *(done)* — digest cadence: per-user `digestFrequency` (daily/weekly) with `LastDigestSentAt` tracking; the worker skips users whose interval hasn't elapsed and widens the window to the cadence (weekly = 7 days); dashboard Account panel cadence selector; migration `AddUserDigestFrequency`
+- **v0.25** *(done)* — admin fleet health: `GET /api/admin/repositories` cross-tenant view (owner, health, pause/archive, open tickets, failures; health/owner/paused/archived filters) and a health breakdown on `GET /api/admin/overview`; dashboard admin console Fleet health panel
 
 ---
 
