@@ -5,13 +5,13 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.10** — on top of v0.9 (platform admin, routing UI, event
-> retention), the platform added visibility-and-compliance tooling: a **write-audit
-> trail** records logins plus every report/config-write on repos, webhooks, AI keys and
-> admin account changes (`GET /api/admin/audit`, filterable); a **paginated failure
-> history** API with date/repository/status filters and a **CSV export** lets you review
-> the data the retention worker prunes; and webhook **signing-secret rotation**
-> re-keys an endpoint without recreating it. 127 tests passing.
+> Project status: **v0.11** — the **operator console & delivery controls** release. The
+> dashboard gained an **admin console**: suspend/restore tenants, browse the audit trail,
+> review and export failure history without leaving `/dashboard/`. Webhook endpoints now
+> expose a **per-endpoint delivery log** (`GET /api/webhooks/{id}/deliveries`) so you can
+> audit every event, retry state and failure. And per-repository **notification
+> preferences** give you a master email on/off switch plus per-event email muting
+> (independent of webhook fan-out). 133 tests passing.
 
 ---
 
@@ -147,6 +147,16 @@ An email outbox (`EmailMessage`) decouples notification from transport:
 Sending is the responsibility of `DevSup.Infrastructure` (SMTP first; transactional
 providers later). Failed sends are retried, never silently dropped.
 
+### Notification preferences (v0.11)
+
+Email is opt-out per repository. `GET /api/notification-preferences` lists your
+preferences; `PUT /api/notification-preferences` upserts one. Each preference has an
+`emailEnabled` master switch (default on) and a `mutedEvents` list that mutes specific
+events *per event* — `failureDetected`, `notCodeError`, `fixPushed`, `fixPendingReview`,
+`needsHumanReview`. A missing preference row means "all emails on". Preferences gate
+**email only**; webhook fan-out is governed by each endpoint's own `events` mask, so you
+can silence your inbox without silencing your Slack channel.
+
 ## 8. Webhooks, channels & health checks
 
 ### Webhook notifications & channels
@@ -222,7 +232,10 @@ always created the moment that account registers.
   tenant. A deactivated account can no longer sign in (`403` at login).
 
 Admin endpoints are authorization-guarded per request (a user must be `IsAdmin`), so a
-non-admin always gets `403` regardless of route knowledge.
+non-admin always gets `403` regardless of route knowledge. In v0.11 the **admin console**
+moved into the dashboard: an admin sees an `Admin` section in `/dashboard/` to
+suspend/restore users, page through the audit trail, and review + CSV-export failure
+history without touching the API directly.
 
 ### Event retention & archiving
 
@@ -268,6 +281,14 @@ secret and returns the new value — once, exactly like creation — without tou
 endpoint's URL, channel, or event subscriptions. All subsequent deliveries are signed
 with the new secret.
 
+### Webhook delivery log
+
+`GET /api/webhooks/{id}/deliveries` (ownership-scoped) returns the delivery history for
+one endpoint — every event fanned out to it with its status (`queued` / `delivered` /
+`failed`), attempt count, last HTTP status/error, HMAC signature, and timestamps.
+Newest first, paginated (`page` / `pageSize`, max 100). The same data the admin console
+and email outbox draw on, per endpoint.
+
 ## 12. Security & sanitization
 
 - **Payload scrubbing** at capture time: `Authorization`, `X-Api-Key`, `Cookie`,
@@ -306,12 +327,13 @@ devsup/
 - `WebhookEndpoints` — user, destination URL, channel (`http`/`slack`/`teams`), event mask, **encrypted signing secret**, active
 - `WebhookDeliveries` — outbox (webhook, event, payload, attempts, last error, sent)
 - `AuditEntries` — write-audit trail (actor, action, entity, before/after, IP, timestamp)
+- `NotificationPreferences` — per-user, per-repository email delivery preferences (`EmailEnabled` master switch + per-event `MutedEmailEvents` bitmask)
 
 Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`).
 
 ### The repair agent (v0.4)
 
@@ -401,6 +423,9 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/webhooks` | Bearer | List webhook endpoints |
 | `DELETE` | `/api/webhooks/{id}` | Bearer | Remove a webhook endpoint |
 | `POST` | `/api/webhooks/{id}/rotate` | Bearer | Replace the signing secret and receive the new value once |
+| `GET` | `/api/webhooks/{id}/deliveries` | Bearer | Per-endpoint webhook delivery log (paginated) |
+| `GET` | `/api/notification-preferences` | Bearer | List your per-repository email delivery preferences |
+| `PUT` | `/api/notification-preferences` | Bearer | Upsert a repository's preference (`emailEnabled`, `mutedEvents`) |
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
 | `GET` | `/api/admin/overview` | Bearer + admin | Platform-wide totals (users, repos, failures, tickets, webhooks) |
 | `GET` | `/api/admin/users` | Bearer + admin | List every user with admin/active flags and per-user counts |
@@ -441,6 +466,7 @@ push/PR to `master`.
 - **v0.8** *(done)* — event replay + ticket re-dispatch, Slack/Teams notification channels, configurable PostgreSQL provider
 - **v0.9** *(done)* — platform admin role + account suspension, dashboard webhook channel/name routing, event retention worker
 - **v0.10** *(done)* — write-audit trail, paginated failure history with date/repo/status filters and CSV export, webhook secret rotation
+- **v0.11** *(done)* — operator console: admin console in the dashboard, per-endpoint webhook delivery log, per-repository notification preferences
 
 ---
 
