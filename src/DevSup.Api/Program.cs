@@ -905,6 +905,86 @@ app.MapGet("/api/tickets", async (Guid? repositoryId, ClaimsPrincipal user, DevS
     return Results.Ok(tickets);
 }).RequireAuthorization();
 
+app.MapGet("/api/tickets/{ticketId:guid}", async (Guid ticketId, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+
+    var ticket = await (from t in db.RepairTickets.AsNoTracking()
+                        join f in db.FailureEvents.AsNoTracking() on t.FailureEventId equals f.Id
+                        where t.Id == ticketId
+                            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId)
+                        select new { Ticket = t, Failure = f }).FirstOrDefaultAsync(ct);
+
+    if (ticket is null)
+    {
+        return Results.NotFound();
+    }
+
+    var row = ticket; // row = { Ticket, Failure }
+    return Results.Ok(new TicketDetailResponse(
+        row.Ticket.Id, row.Ticket.FailureEventId, row.Ticket.RepositoryId, row.Ticket.Category.ToString(), row.Ticket.Kind.ToString(),
+        row.Ticket.Status.ToString(), row.Ticket.Analysis, row.Ticket.PatchSummary, row.Ticket.CommitSha, row.Ticket.PullRequestUrl, row.Ticket.LastError,
+        row.Ticket.UpdatedAt, row.Failure.Method, row.Failure.Path, row.Failure.StatusCode, row.Failure.ExceptionMessage, row.Failure.OccurredAt));
+}).RequireAuthorization();
+
+app.MapPost("/api/tickets/{ticketId:guid}/close", async (Guid ticketId, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+
+    var ticket = await db.RepairTickets
+        .FirstOrDefaultAsync(t => t.Id == ticketId
+            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId), ct);
+
+    if (ticket is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (ticket.Status == TicketStatus.Closed)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "The ticket is already closed.");
+    }
+
+    var before = ticket.Status.ToString();
+    var now = DateTimeOffset.UtcNow;
+    db.Entry(ticket).Property(t => t.Status).CurrentValue = TicketStatus.Closed;
+    db.Entry(ticket).Property(t => t.UpdatedAt).CurrentValue = now;
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "ticket.close", "RepairTicket",
+        ticket.Id.ToString(), before: before, after: TicketStatus.Closed.ToString(), ct: ct);
+
+    return Results.Ok(new { ticketId = ticket.Id, status = "closed" });
+}).RequireAuthorization();
+
+app.MapPost("/api/tickets/{ticketId:guid}/reopen", async (Guid ticketId, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+
+    var ticket = await db.RepairTickets
+        .FirstOrDefaultAsync(t => t.Id == ticketId
+            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId), ct);
+
+    if (ticket is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (ticket.Status != TicketStatus.Closed)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Only closed tickets can be reopened.");
+    }
+
+    var before = ticket.Status.ToString();
+    var now = DateTimeOffset.UtcNow;
+    db.Entry(ticket).Property(t => t.Status).CurrentValue = TicketStatus.New;
+    db.Entry(ticket).Property(t => t.UpdatedAt).CurrentValue = now;
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "ticket.reopen", "RepairTicket",
+        ticket.Id.ToString(), before: before, after: TicketStatus.New.ToString(), ct: ct);
+
+    return Results.Ok(new { ticketId = ticket.Id, status = "new" });
+}).RequireAuthorization();
+
 app.MapGet("/api/overview", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
     var ownerId = user.GetUserId();

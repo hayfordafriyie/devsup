@@ -150,9 +150,77 @@
                 "<td>" + badge(status) + "</td>" +
                 "<td>" + escaped(t.category + " \u00b7 " + t.kind) + "</td>" +
                 "<td>" + patch + "</td>" +
+                '<td><button data-ticket-detail="' + t.id + '" title="Incident detail">View</button></td>' +
                 "</tr>";
         }).join("");
+        renderTickets.currentCount = tickets.length;
         section.hidden = false;
+    }
+
+    var currentTicketId = null;
+
+    function renderTicketDetail(detail) {
+        document.getElementById("ticket-detail-section").hidden = false;
+        document.getElementById("ticket-detail-title").textContent = "#" + detail.id.slice(0, 8);
+
+        var detailEl = document.getElementById("ticket-detail-body");
+        var closeButton = detail.status && detail.status === "closed" ? "" :
+            '<button data-ticket-close="' + detail.id + '">Close ticket</button>';
+        var reopenButton = detail.status === "closed" ?
+            '<button data-ticket-reopen="' + detail.id + '">Reopen ticket</button>' : "";
+        var exception = detail.exceptionMessage
+            ? '<pre class="detail-pre">' + escapeHtml(detail.exceptionMessage) + "</pre>"
+            : '<p class="muted">No exception message recorded.</p>';
+        var patch = detail.patchSummary
+            ? "<p><strong>Patch:</strong> " + escapeHtml(detail.patchSummary) + "</p>" : "";
+        var analysis = detail.analysis
+            ? "<p><strong>Analysis:</strong> " + escapeHtml(detail.analysis) + "</p>" : "";
+        var prLink = detail.pullRequestUrl
+            ? ' <a href="' + escapeHtml(detail.pullRequestUrl) + '" target="_blank" rel="noopener">PR</a>' : "";
+        var commit = detail.commitSha
+            ? "<p><strong>Commit:</strong> <code>" + escapeHtml(detail.commitSha) + "</code></p>" : "";
+        var lastError = detail.lastError
+            ? "<p class=\"muted\"><strong>Last agent error:</strong> " + escapeHtml(detail.lastError) + "</p>" : "";
+
+        detailEl.innerHTML =
+            "<p><strong>" + escapeHtml(detail.method) + " " + escapeHtml(detail.path) + "</strong> " +
+            "&middot; HTTP " + detail.statusCode + "</p>" +
+            "<p>" + badge({ label: prettyStatus(detail.status), kind: kindFor(detail.status) }) + "</p>" +
+            "<p class=\"muted\">Occurred " + new Date(detail.occurredAt).toLocaleString() + " &middot; " +
+            "Updated " + new Date(detail.updatedAt).toLocaleString() + "</p>" +
+            "<p><strong>Category:</strong> " + escapeHtml(detail.category + " \u00b7 " + detail.kind) + "</p>" +
+            exception +
+            patch +
+            analysis +
+            commit +
+            prLink +
+            lastError +
+            "<p>" + closeButton + reopenButton + ' <button data-ticket-back="1">Back</button></p>';
+    }
+
+    function prettyStatus(status) {
+        return String(status).replace(/([A-Z])/g, " $1").toLowerCase();
+    }
+
+    function kindFor(status) {
+        switch (status) {
+            case "closed":
+            case "fixPushed":
+            case "fixVerified": return "ok";
+            case "needsHumanReview": return "bad";
+            case "new":
+            case "triaged":
+            case "investigating":
+            case "patchProposed":
+            case "fixPendingReview": return "warn";
+            default: return "muted";
+        }
+    }
+
+    async function loadTicketDetail(ticketId) {
+        currentTicketId = ticketId;
+        var detail = await api("/api/tickets/" + ticketId);
+        renderTicketDetail(detail);
     }
 
     function channelBadge(channel) {
@@ -224,6 +292,37 @@
         }
         var page = await api("/api/webhooks/" + webhookId + "/deliveries?pageSize=20");
         renderDeliveryLog(webhookId, page);
+    }
+
+    var currentAccount = null;
+
+    function renderAccount(account) {
+        document.getElementById("account-section").hidden = false;
+        var body = document.getElementById("account-body");
+        body.innerHTML =
+            "<p><strong>Name:</strong> " + escapeHtml(account.displayName) +
+            "<br><strong>Email:</strong> <code>" + escapeHtml(account.email) + "</code></p>" +
+            '<label class="pref-controls"><input type="checkbox" id="digest-toggle"' +
+            (account.digestEnabled ? " checked" : "") +
+            ' /> Send me the daily digest summary</label>' +
+            '<p class="muted">The daily digest summarizes failures, open repair tickets and recently pushed fixes. Turning it off keeps transactional incident emails and webhook deliveries intact.</p>';
+        body.querySelector("#digest-toggle").addEventListener("change", function () {
+            if (!currentAccount) return;
+            var enabled = this.checked;
+            fetch("/api/account", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+                body: JSON.stringify({ displayName: currentAccount.displayName, digestEnabled: enabled })
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to update digest preference");
+                return loadAccount();
+            }).catch(function (e) { showError(e.message); });
+        });
+    }
+
+    async function loadAccount() {
+        currentAccount = await api("/api/account");
+        renderAccount(currentAccount);
     }
 
     function renderAdminUsers(users) {
@@ -406,6 +505,7 @@
         await loadAdmin();
         await loadPreferences();
         await loadEmails();
+        await loadAccount();
     }
 
     function showSession() {
@@ -429,7 +529,41 @@
     });
 
     document.addEventListener("click", function (event) {
-        var button = event.target.closest("[data-delete]");
+        var button = event.target.closest("[data-ticket-detail]");
+        if (button) {
+            loadTicketDetail(button.getAttribute("data-ticket-detail")).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-ticket-close]");
+        if (button) {
+            var closeId = button.getAttribute("data-ticket-close");
+            fetch("/api/tickets/" + closeId + "/close", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to close ticket");
+                return loadTicketDetail(closeId);
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-ticket-reopen]");
+        if (button) {
+            var reopenId = button.getAttribute("data-ticket-reopen");
+            fetch("/api/tickets/" + reopenId + "/reopen", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to reopen ticket");
+                return loadTicketDetail(reopenId);
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-ticket-back]");
+        if (button) {
+            document.getElementById("ticket-detail-section").hidden = true;
+            return;
+        }
+        button = event.target.closest("[data-delete]");
         if (button) {
             var id = button.getAttribute("data-delete");
             fetch("/api/webhooks/" + id, {

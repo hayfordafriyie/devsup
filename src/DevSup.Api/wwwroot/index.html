@@ -48,10 +48,16 @@
                         <th>Status</th>
                         <th>Category</th>
                         <th>Patch</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody></tbody>
             </table>
+        </section>
+
+        <section id="ticket-detail-section" class="panel" hidden>
+            <h2>Incident <span id="ticket-detail-title" class="muted"></span></h2>
+            <div id="ticket-detail-body"></div>
         </section>
 
         <section id="webhooks-section" class="panel" hidden>
@@ -90,6 +96,11 @@
             <h2>Notification preferences</h2>
             <p class="muted">Email is on by default for every repository. Mute specific events, or switch a repository's email off entirely — webhook deliveries are never affected.</p>
             <div id="preferences"></div>
+        </section>
+
+        <section id="account-section" class="panel" hidden>
+            <h2>Account</h2>
+            <div id="account-body"></div>
         </section>
 
         <section id="admin-section" class="panel" hidden>

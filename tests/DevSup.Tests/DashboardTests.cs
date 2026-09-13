@@ -116,5 +116,14 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("data-retry-delivery", js);
         Assert.Contains("\"/deliveries/\" + deliveryId + \"/retry\"", js);
         Assert.Contains("renderDeliveryLog", js);
+        var html2 = await (await client.GetAsync("/dashboard/")).Content.ReadAsStringAsync();
+        Assert.Contains("ticket-detail-section", html2);
+        Assert.Contains("\"/api/tickets/\" + ticketId", js);
+        Assert.Contains("data-ticket-detail", js);
+        Assert.Contains("data-ticket-close", js);
+        Assert.Contains("data-ticket-reopen", js);
+        Assert.Contains("account-section", html2);
+        Assert.Contains("digest-toggle", js);
+        Assert.Contains("digestEnabled", js);
     }
 }

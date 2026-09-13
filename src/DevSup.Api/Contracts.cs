@@ -59,6 +59,25 @@ public sealed record TicketResponse(
 
 public sealed record AiKeyRequest(AiModelProvider Provider, string Model, string Key);
 
+public sealed record TicketDetailResponse(
+    Guid Id,
+    Guid FailureEventId,
+    Guid RepositoryId,
+    string Category,
+    string Kind,
+    string Status,
+    string? Analysis,
+    string? PatchSummary,
+    string? CommitSha,
+    string? PullRequestUrl,
+    string? LastError,
+    DateTimeOffset UpdatedAt,
+    string Method,
+    string Path,
+    int StatusCode,
+    string? ExceptionMessage,
+    DateTimeOffset OccurredAt);
+
 public sealed record AiKeyResponse(AiModelProvider Provider, string Model, string? KeyMask, DateTimeOffset UpdatedAt);
 
 public sealed record CreateWebhookRequest(string Url, List<WebhookEvent>? Events = null, string? Name = null, WebhookChannel Channel = WebhookChannel.Http);
