@@ -5,12 +5,12 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.15** — the **incident triage & account controls** release. Every
-> repair ticket is inspectable end-to-end (`GET /api/tickets/{id}`: exception message,
-> analysis, patch, commit/PR links) and closable or reopenable with one audited call
-> (`POST /api/tickets/{id}/close|/reopen`). The dashboard's **View** button opens the
-> incident with close/reopen actions, and a new **Account** panel puts the daily-digest
-> toggle (`PUT /api/account digestEnabled`) one click away. 155 tests passing.
+> Project status: **v0.16** — the **repository monitoring controls** release. Every
+> repository can be paused (`POST /api/repositories/{id}/pause`) with one click or one
+> call — health checks, failure ingest and repair pick-up go quiet while the dashboard
+> badge flips to **Paused**; resume returns to normal with zero data loss. Webhook
+> endpoints gain the same treatment (`activate` / `deactivate`) with pause/resume
+> buttons in the dashboard. 167 tests passing.
 
 ---
 
@@ -247,6 +247,27 @@ The `GET /api/overview` endpoint (and the dashboard) aggregates this health stat
 your ticket counts across **all** repositories, so one home screen covers the whole
 fleet.
 
+### Pausing repository monitoring (v0.16)
+
+Sometimes you need a repo to stop raising noise — a hotfix window, an upstream outage,
+a repo you no longer care about but want to keep listed. `POST
+/api/repositories/{id}/pause` flips a repository to **paused** (`Paused` flag +
+`PausedAt`, migration `AddRepositoryPaused`); `POST /api/repositories/{id}/unpause`
+flips it back. While paused, three pipelines go quiet: the health checker skips the
+repo's app URL, `POST /api/ingest` rejects new failures with `409`, and the repair
+worker won't pick up its tickets. Existing tickets, failures and webhook history stay
+visible, and the digest excludes paused repositories. Both transitions are audited
+(`repository.pause` / `repository.unpause`), the dashboard shows a **Paused** badge
+with **Pause / Resume** buttons per repository.
+
+### Webhook pause & resume (v0.16)
+
+The dashboard and API let you take an endpoint out of rotation without deleting it.
+`POST /api/webhooks/{id}/deactivate` marks it inactive and `POST
+/api/webhooks/{id}/activate` restores it (each audited; double toggles return `409`).
+Inactive endpoints stay listed and keep their history but receive nothing — the
+delivery outbox drains them silently, exactly like deleted endpoints.
+
 ## 9. Event replay & re-dispatch
 
 Some failures deserve a second look — a transient SMTP outage, a receiver that was
@@ -325,6 +346,8 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
 - `user.deactivate`, `user.activate` — admin account changes
 - `account.profileUpdate`, `account.passwordChange` — self-service profile/password changes
 - `webhook.test`, `webhook.retry` — delivery operations
+- `webhook.activate`, `webhook.deactivate` — endpoint pause/resume
+- `repository.pause`, `repository.unpause` — monitoring pause/resume
 - `email.retry` — re-queuing a failed outbound email
 - `ticket.close`, `ticket.reopen` — ticket lifecycle (triage) operations
 
@@ -490,6 +513,8 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/auth/gitlab/callback` | — | GitLab OAuth callback → links account, returns JWT |
 | `GET` | `/api/repositories` | Bearer | List connected repositories |
 | `POST` | `/api/repositories` | Bearer | Connect a repository (provider, clone URL, branch) |
+| `POST` | `/api/repositories/{id}/pause` | Bearer | Pause monitoring (health checks, ingest, repair) |
+| `POST` | `/api/repositories/{id}/unpause` | Bearer | Resume monitoring |
 | `POST` | `/api/ingest` | Bearer | Report a failure; triaged into a repair ticket |
 | `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
 | `GET` | `/api/ai-keys` | Bearer | List your AI key bindings (masked) |
@@ -508,6 +533,8 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/webhooks` | Bearer | List webhook endpoints |
 | `DELETE` | `/api/webhooks/{id}` | Bearer | Remove a webhook endpoint |
 | `POST` | `/api/webhooks/{id}/rotate` | Bearer | Replace the signing secret and receive the new value once |
+| `POST` | `/api/webhooks/{id}/deactivate` | Bearer | Pause the endpoint (stops deliveries) |
+| `POST` | `/api/webhooks/{id}/activate` | Bearer | Resume the endpoint |
 | `GET` | `/api/webhooks/{id}/deliveries` | Bearer | Per-endpoint webhook delivery log (paginated) |
 | `POST` | `/api/webhooks/{id}/test` | Bearer | Queue a signed `devsup.ping` test delivery |
 | `POST` | `/api/webhooks/{id}/deliveries/{deliveryId}/retry` | Bearer | Re-queue a failed delivery |
@@ -563,6 +590,7 @@ push/PR to `master`.
 - **v0.13** *(done)* — delivery center: email outbox log + retry API, scheduled daily digest emails, Delivery center panel with outbox retry and webhook ping in the dashboard
 - **v0.14** *(done)* — repair verification & delivery deep-dive: probe-confirmed `FixVerified` with confirmation emails, per-user digest opt-out, per-webhook delivery log with retry in the dashboard
 - **v0.15** *(done)* — incident triage & account controls: ticket detail + close/reopen API (audited), dashboard incident view with triage actions, Account panel with daily-digest toggle
+- **v0.16** *(done)* — monitoring controls: pause/unpause repositories (health checks, ingest, repair skip; migration `AddRepositoryPaused`), webhook activate/deactivate API + dashboard Pause/Resume buttons per repo and webhook
 
 ---
 
