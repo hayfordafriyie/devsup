@@ -62,6 +62,10 @@ public sealed record ConnectedRepository
 
     public DateTimeOffset? ArchivedAt { get; init; }
 
+    /// <summary>Per-repository retention override in days: null = inherit the global
+    /// window, 0 = keep this repo's history forever, &gt;0 = custom window.</summary>
+    public int? RetentionDays { get; init; }
+
     public DateTimeOffset ConnectedAt { get; init; }
 }
 

@@ -786,7 +786,7 @@ app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db,
             ? query.Where(r => r.Archived && r.OwnerUserId == ownerId)
             : query.Where(r => !r.Archived
                 && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))))
-        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl, r.RepairMode, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Archived, r.OwnerUserId == ownerId, r.ArchivedAt))
+        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl, r.RepairMode, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Archived, r.OwnerUserId == ownerId, r.ArchivedAt, r.RetentionDays))
         .ToListAsync(ct);
 
     return Results.Ok(repositories);
@@ -888,6 +888,31 @@ app.MapPost("/api/repositories/{id:guid}/unpause", async (Guid id, ClaimsPrincip
         repository.Id.ToString(), after: $"{repository.CloneUrl} resumed", ct: ct);
 
     return Results.Ok(new { repositoryId = repository.Id, paused = false });
+}).RequireAuthorization();
+
+app.MapPut("/api/repositories/{id:guid}/retention", async (Guid id, SetRepositoryRetentionRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var repository = await db.ConnectedRepositories
+        .FirstOrDefaultAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+    if (repository is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (request.RetentionDays is < 0)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+            detail: "Retention days must be null (inherit), 0 (keep forever) or a positive number.");
+    }
+
+    var before = repository.RetentionDays?.ToString() ?? "inherit";
+    db.Entry(repository).Property(r => r.RetentionDays).CurrentValue = request.RetentionDays;
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "repository.retention", "ConnectedRepository",
+        repository.Id.ToString(), before: before, after: request.RetentionDays?.ToString() ?? "inherit", ct: ct);
+
+    return Results.Ok(new { repositoryId = repository.Id, retentionDays = request.RetentionDays });
 }).RequireAuthorization();
 
 app.MapGet("/api/repositories/{id:guid}/members", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
@@ -1545,7 +1570,7 @@ app.MapGet("/api/overview", async (ClaimsPrincipal user, DevSupDbContext db, Can
         .AsNoTracking()
         .Where(r => !r.Archived
             && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
-        .Select(r => new RepositoryHealthRow(r.Id, r.CloneUrl, r.AppUrl, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Paused, r.PausedAt, r.OwnerUserId == ownerId))
+        .Select(r => new RepositoryHealthRow(r.Id, r.CloneUrl, r.AppUrl, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Paused, r.PausedAt, r.OwnerUserId == ownerId, r.RetentionDays))
         .ToListAsync(ct);
 
     var tickets = await db.RepairTickets

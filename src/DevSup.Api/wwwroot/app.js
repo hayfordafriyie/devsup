@@ -125,6 +125,7 @@
             action += '<button data-repo-activity="' + row.id + '" title="Repository activity">Activity</button>';
             if (row.owner) {
                 action += '<button data-repo-archive="' + row.id + '" title="Retire from active monitoring">Archive</button>';
+                action += '<button data-repo-retention="' + row.id + '" title="History retention window">Retention</button>';
             }
             var selectCell = row.owner
                 ? '<input type="checkbox" class="repo-select" data-repo-select="' + row.id + '" />'
@@ -753,6 +754,26 @@
                 body: JSON.stringify({ action: bulkAction, repositoryIds: bulkIds })
             }).then(function (response) {
                 if (!response.ok) throw new Error("Bulk action failed");
+                return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-repo-retention]");
+        if (button) {
+            var retentionId = button.getAttribute("data-repo-retention");
+            var input = window.prompt("Days to keep this repository's history (blank = inherit global, 0 = keep forever):", "");
+            if (input === null) return;
+            var days = input.trim() === "" ? null : parseInt(input, 10);
+            if (days !== null && (isNaN(days) || days < 0)) {
+                showError("Enter 0 or a positive number of days");
+                return;
+            }
+            fetch("/api/repositories/" + retentionId + "/retention", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+                body: JSON.stringify({ retentionDays: days })
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to update retention");
                 return load();
             }).catch(function (e) { showError(e.message); });
             return;

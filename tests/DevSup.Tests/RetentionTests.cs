@@ -101,8 +101,74 @@ public sealed class RetentionTests
         Assert.NotNull(await check.FailureEvents.FindAsync(oldFailure));
     }
 
+    [Fact]
+    public async Task Purge_RespectsPerRepositoryKeepForever()
+    {
+        var factory = new DevSupApiFactory();
+        await using var _ = factory;
+        using var client = factory.CreateClient();
+        await Helpers.LoginAndGetTokenAsync(client, "rt-forever@example.com", "RT Forever");
+
+        await using var seedScope = factory.Services.CreateAsyncScope();
+        var db = seedScope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var owner = await db.Users.SingleAsync();
+        var (failure, _) = await SeedFailureAsync(db, owner, daysAgo: 400, retentionDays: 0);
+
+        await using var purgeScope = factory.Services.CreateAsyncScope();
+        var cleaner = purgeScope.ServiceProvider.GetRequiredService<RetentionCleaner>();
+        Assert.Equal(0, await cleaner.PurgeAsync(windowDays: 365, batchSize: 500, CancellationToken.None));
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var check = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        Assert.NotNull(await check.FailureEvents.FindAsync(failure));
+    }
+
+    [Fact]
+    public async Task Purge_PerRepositoryShorterWindowPurgesSooner()
+    {
+        var factory = new DevSupApiFactory();
+        await using var _ = factory;
+        using var client = factory.CreateClient();
+        await Helpers.LoginAndGetTokenAsync(client, "rt-short@example.com", "RT Short");
+
+        await using var seedScope = factory.Services.CreateAsyncScope();
+        var db = seedScope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var owner = await db.Users.SingleAsync();
+        var (failure, _) = await SeedFailureAsync(db, owner, daysAgo: 40, retentionDays: 30);
+
+        await using var purgeScope = factory.Services.CreateAsyncScope();
+        var cleaner = purgeScope.ServiceProvider.GetRequiredService<RetentionCleaner>();
+        Assert.True(await cleaner.PurgeAsync(windowDays: 365, batchSize: 500, CancellationToken.None) >= 1);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var check = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        Assert.Null(await check.FailureEvents.FindAsync(failure));
+    }
+
+    [Fact]
+    public async Task Purge_PerRepositoryLongerWindowKeepsLonger()
+    {
+        var factory = new DevSupApiFactory();
+        await using var _ = factory;
+        using var client = factory.CreateClient();
+        await Helpers.LoginAndGetTokenAsync(client, "rt-long@example.com", "RT Long");
+
+        await using var seedScope = factory.Services.CreateAsyncScope();
+        var db = seedScope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var owner = await db.Users.SingleAsync();
+        var (failure, _) = await SeedFailureAsync(db, owner, daysAgo: 400, retentionDays: 730);
+
+        await using var purgeScope = factory.Services.CreateAsyncScope();
+        var cleaner = purgeScope.ServiceProvider.GetRequiredService<RetentionCleaner>();
+        await cleaner.PurgeAsync(windowDays: 365, batchSize: 500, CancellationToken.None);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var check = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        Assert.NotNull(await check.FailureEvents.FindAsync(failure));
+    }
+
     private static async Task<(Guid FailureId, Guid TicketId)> SeedFailureAsync(
-        DevSupDbContext db, User owner, int daysAgo)
+        DevSupDbContext db, User owner, int daysAgo, int? retentionDays = null)
     {
         var repository = new ConnectedRepository
         {
@@ -111,6 +177,7 @@ public sealed class RetentionTests
             Provider = GitProvider.GitHub,
             CloneUrl = $"https://github.com/acme/retention-{Guid.NewGuid():N}.git",
             DefaultBranch = "main",
+            RetentionDays = retentionDays,
             ConnectedAt = DateTimeOffset.UtcNow
         };
         db.ConnectedRepositories.Add(repository);

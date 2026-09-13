@@ -49,8 +49,7 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(r => r.Provider).HasConversion<int>();
             entity.Property(r => r.RepairMode).HasConversion<int>();
             entity.Property(r => r.Archived).HasDefaultValue(false);
-            entity.HasIndex(r => new { r.OwnerUserId, r.CloneUrl }).IsUnique();
-        });
+            entity.HasIndex(r => new { r.OwnerUserId, r.CloneUrl }).IsUnique();        });
 
         modelBuilder.Entity<FailureEvent>(entity =>
         {

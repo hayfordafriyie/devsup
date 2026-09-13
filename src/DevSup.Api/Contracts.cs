@@ -30,7 +30,8 @@ public sealed record RepositoryResponse(
     string? AppHealthLastError = null,
     bool Archived = false,
     bool Owner = false,
-    DateTimeOffset? ArchivedAt = null);
+    DateTimeOffset? ArchivedAt = null,
+    int? RetentionDays = null);
 
 public sealed record IngestFailureRequest(
     Guid RepositoryId,
@@ -90,6 +91,8 @@ public sealed record RepositoryMembersResponse(bool Owner, IReadOnlyList<Reposit
 
 public sealed record TransferRepositoryRequest(string Email);
 
+public sealed record SetRepositoryRetentionRequest(int? RetentionDays);
+
 public sealed record RepositoryActivityItem(Guid Id, string ActorEmail, string Action, string? Before, string? After, DateTimeOffset Timestamp);
 
 public sealed record BulkRepositoryActionRequest(string Action, List<Guid> RepositoryIds);
@@ -116,7 +119,8 @@ public sealed record RepositoryHealthRow(
     string? AppHealthLastError,
     bool Paused,
     DateTimeOffset? PausedAt,
-    bool Owner = false);
+    bool Owner = false,
+    int? RetentionDays = null);
 
 public sealed record TicketSummary(
     int New,
