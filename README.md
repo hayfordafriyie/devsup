@@ -5,12 +5,12 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.16** — the **repository monitoring controls** release. Every
-> repository can be paused (`POST /api/repositories/{id}/pause`) with one click or one
-> call — health checks, failure ingest and repair pick-up go quiet while the dashboard
-> badge flips to **Paused**; resume returns to normal with zero data loss. Webhook
-> endpoints gain the same treatment (`activate` / `deactivate`) with pause/resume
-> buttons in the dashboard. 167 tests passing.
+> Project status: **v0.17** — the **teams & shared repositories** release. Owners can
+> invite teammates onto a repository (`POST /api/repositories/{id}/members`, role
+> `observer` or `operator`), list them, and revoke access — a **Members** panel in the
+> dashboard manages it with an invite form and one-click revoke. Shared members see the
+> repository across the overview, tickets, failures, preferences and daily digest, while
+> ingest and repair pick-up stay owner-only. 178 tests passing.
 
 ---
 
@@ -280,7 +280,8 @@ down at notify time, an agent that stalled mid-repair.
   repair ticket to the **New** state so the repair worker picks it up again. Tickets
   that are already fixed, pending review, or closed are rejected with `409`.
 
-Both are scoped strictly to the authenticated user's repositories.
+Both are scoped to the authenticated user's repositories — their own or, since v0.17,
+ones shared with them.
 
 ### Ticket detail & triage (v0.15)
 
@@ -294,9 +295,32 @@ Tickets are inspectable and actionable without guessing:
 - `POST /api/tickets/{ticketId}/reopen` — returns a closed ticket to `new` so the repair
   worker can attack it again (409 unless closed), audited as `ticket.reopen`.
 
-Scoped to the owner's repositories like every ticket route. The dashboard's **View**
-button on each ticket row opens the full incident; **Close ticket** / **Reopen ticket**
-act on it immediately, and each change is written to the audit trail.
+Scoped to the authenticated user's accessible repositories (own or shared since v0.17)
+like every ticket route. The dashboard's **View** button on each ticket row opens the
+full incident; **Close ticket** / **Reopen ticket** act on it immediately, and each
+change is written to the audit trail.
+
+### Teams & shared repositories (v0.17)
+
+Repositories can be shared with other DevSup users. The owner invites a teammate by
+email with a role — `operator` (full triage access) or `observer` (read access):
+
+- `POST /api/repositories/{id}/members` — invite (`{ email, role }`); re-inviting an
+  existing member **updates their role**. Unknown or unregistered emails return `404`
+  (you can't invite ghosts; you also can't share with yourself).
+- `GET /api/repositories/{id}/members` — the member list (needs any access; includes
+  `owner: true/false` so the dashboard can show controls only to the owner).
+- `DELETE /api/repositories/{id}/members/{userId}` — revoke access.
+
+A shared member sees the repository everywhere a team member should: the overview,
+repository list, tickets (including detail/close/reopen), failure history + CSV export,
+notification preferences, and the daily digest. Because a shared repository is still
+*one* repo, two safety rails hold: **failure ingest** (`POST /api/ingest`) and the
+**repair agent's pick-up** remain owner-only, and — like every tenant boundary in
+DevSup — these read paths are cross-tenant views, not cross-tenant writes (a member
+triaging a ticket still uses their own identity and the repo's real owner is the one
+notified). The audit trail records `repository.share` / `repository.unshare` with the
+invited email and role.
 
 ## 10. Platform admin & data retention
 
@@ -348,6 +372,7 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
 - `webhook.test`, `webhook.retry` — delivery operations
 - `webhook.activate`, `webhook.deactivate` — endpoint pause/resume
 - `repository.pause`, `repository.unpause` — monitoring pause/resume
+- `repository.share`, `repository.unshare` — repository sharing (invite / revoke)
 - `email.retry` — re-queuing a failed outbound email
 - `ticket.close`, `ticket.reopen` — ticket lifecycle (triage) operations
 
@@ -422,6 +447,7 @@ devsup/
 
 - `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, created timestamp
 - `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`)
+- `RepositoryMembers` — cross-tenant shares (repository + user composite key, role `observer`/`operator`, created at)
 - `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
 - `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA, last agent error, optional PR/MR URL
@@ -435,7 +461,7 @@ Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` 
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`).
 
 ### The repair agent (v0.4)
 
@@ -515,6 +541,9 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `POST` | `/api/repositories` | Bearer | Connect a repository (provider, clone URL, branch) |
 | `POST` | `/api/repositories/{id}/pause` | Bearer | Pause monitoring (health checks, ingest, repair) |
 | `POST` | `/api/repositories/{id}/unpause` | Bearer | Resume monitoring |
+| `GET` | `/api/repositories/{id}/members` | Bearer | List repository members (`owner` flag) |
+| `POST` | `/api/repositories/{id}/members` | Bearer | Invite a member (`{ email, role }`; reshare updates role) |
+| `DELETE` | `/api/repositories/{id}/members/{userId}` | Bearer | Revoke a member's access |
 | `POST` | `/api/ingest` | Bearer | Report a failure; triaged into a repair ticket |
 | `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
 | `GET` | `/api/ai-keys` | Bearer | List your AI key bindings (masked) |
@@ -591,6 +620,7 @@ push/PR to `master`.
 - **v0.14** *(done)* — repair verification & delivery deep-dive: probe-confirmed `FixVerified` with confirmation emails, per-user digest opt-out, per-webhook delivery log with retry in the dashboard
 - **v0.15** *(done)* — incident triage & account controls: ticket detail + close/reopen API (audited), dashboard incident view with triage actions, Account panel with daily-digest toggle
 - **v0.16** *(done)* — monitoring controls: pause/unpause repositories (health checks, ingest, repair skip; migration `AddRepositoryPaused`), webhook activate/deactivate API + dashboard Pause/Resume buttons per repo and webhook
+- **v0.17** *(done)* — teams & shared repositories: owners invite/revoke members by role, shared members see the repo across overview/tickets/failures/preferences/digest while ingest + repair stay owner-only; dashboard Members panel (invite form + revoke), migration `AddRepositoryMembers`
 
 ---
 
