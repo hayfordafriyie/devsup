@@ -330,6 +330,63 @@ Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
     [Fact]
+    public async Task Ingest_WithNewerSchemaVersion_ReturnsUpgradeRequired()
+    {
+        var token = await LoginAndGetTokenAsync("ingest-schema@example.com", "Ingest Schema");
+        var repositoryId = await CreateRepositoryIdAsync(token, "https://github.com/acme/schema.git");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/ingest")
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { repositoryId, statusCode = 500, method = "GET", path = "/api/x" }),
+                Encoding.UTF8,
+                "application/json")
+        };
+        request.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Add(PayloadSanitizer.SchemaVersionHeaderName, "999");
+
+        var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.UpgradeRequired, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Ingest_RedactsSecretsServerSide_AsDefenseInDepth()
+    {
+        var token = await LoginAndGetTokenAsync("ingest-redact@example.com", "Ingest Redact");
+        var repositoryId = await CreateRepositoryIdAsync(token, "https://github.com/acme/redact.git");
+
+        // Payload with a raw bearer value that would normally only be redacted by
+        // the middleware; a non-conforming consumer posts it verbatim.
+        var requestBody = JsonSerializer.Serialize(new
+        {
+            repositoryId,
+            statusCode = 500,
+            method = "POST",
+            path = "/api/orders",
+            requestPayload = "{\"token\":\"sk-live-abc123\",\"user\":\"bob\"}"
+        });
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/ingest")
+        {
+            Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        Assert.Equal(HttpStatusCode.Created, (await _client.SendAsync(request)).StatusCode);
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var stored = await scope.ServiceProvider.GetRequiredService<DevSupDbContext>()
+            .FailureEvents.AsNoTracking()
+            .FirstOrDefaultAsync(f => f.RepositoryId == repositoryId);
+        Assert.NotNull(stored);
+        Assert.DoesNotContain("sk-live", stored.RequestPayload);
+        Assert.Contains("\"REDACTED\"", stored.RequestPayload);
+    }
+
+    [Fact]
     public async Task Tickets_ListRepairTicketsForUser()
     {
         var token = await LoginAndGetTokenAsync("tickets@example.com", "Ticket User");

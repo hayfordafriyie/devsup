@@ -560,8 +560,18 @@ app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db,
     return Results.Ok(repositories);
 }).RequireAuthorization();
 
-app.MapPost("/api/ingest", async (IngestFailureRequest request, ClaimsPrincipal user, DevSupDbContext db, IFailureClassifier classifier, CancellationToken ct) =>
+app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest httpRequest, ClaimsPrincipal user, DevSupDbContext db, IFailureClassifier classifier, CancellationToken ct) =>
 {
+    if (httpRequest.Headers.TryGetValue(PayloadSanitizer.SchemaVersionHeaderName, out var versionHeader)
+        && int.TryParse(versionHeader, out var reportedVersion)
+        && reportedVersion > PayloadSanitizer.CurrentSchemaVersion)
+    {
+        return Results.Problem(
+            statusCode: StatusCodes.Status426UpgradeRequired,
+            title: "Upgrade Required",
+            detail: $"Schema version {reportedVersion} is newer than the {PayloadSanitizer.CurrentSchemaVersion} this platform supports. Upgrade the DevSup middleware/consumer before reporting.");
+    }
+
     var ownerId = user.GetUserId();
 
     var repository = await db.ConnectedRepositories.AsNoTracking()
@@ -579,10 +589,10 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, ClaimsPrincipal 
         StatusCode = request.StatusCode,
         Method = request.Method,
         Path = request.Path,
-        RequestPayload = Truncate(request.RequestPayload, 8192),
-        ResponsePayload = Truncate(request.ResponsePayload, 8192),
-        ExceptionMessage = Truncate(request.ExceptionMessage, 4096),
-        StackTrace = Truncate(request.StackTrace, 16_384),
+        RequestPayload = Truncate(PayloadSanitizer.Redact(request.RequestPayload), 8192),
+        ResponsePayload = Truncate(PayloadSanitizer.Redact(request.ResponsePayload), 8192),
+        ExceptionMessage = Truncate(PayloadSanitizer.Redact(request.ExceptionMessage), 4096),
+        StackTrace = Truncate(PayloadSanitizer.Redact(request.StackTrace), 16_384),
         OccurredAt = DateTimeOffset.UtcNow
     };
 

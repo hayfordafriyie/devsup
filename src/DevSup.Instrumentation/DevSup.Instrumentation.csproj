@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\DevSup.Core\DevSup.Core.csproj" />
   </ItemGroup>
 
 </Project>
