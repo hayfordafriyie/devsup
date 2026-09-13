@@ -90,6 +90,8 @@ public sealed record RepositoryMembersResponse(bool Owner, IReadOnlyList<Reposit
 
 public sealed record TransferRepositoryRequest(string Email);
 
+public sealed record RepositoryActivityItem(Guid Id, string ActorEmail, string Action, string? Before, string? After, DateTimeOffset Timestamp);
+
 public sealed record AiKeyResponse(AiModelProvider Provider, string Model, string? KeyMask, DateTimeOffset UpdatedAt);
 
 public sealed record CreateWebhookRequest(string Url, List<WebhookEvent>? Events = null, string? Name = null, WebhookChannel Channel = WebhookChannel.Http);

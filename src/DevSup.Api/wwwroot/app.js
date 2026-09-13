@@ -122,6 +122,7 @@
                     : '<button data-repo-pause="' + row.id + '" title="Pause monitoring">Pause</button>')
                 : "";
             action += '<button data-repo-members="' + row.id + '" title="Team access">Members</button>';
+            action += '<button data-repo-activity="' + row.id + '" title="Repository activity">Activity</button>';
             if (row.owner) {
                 action += '<button data-repo-archive="' + row.id + '" title="Retire from active monitoring">Archive</button>';
             }
@@ -175,6 +176,34 @@
             document.getElementById("repo-leave").setAttribute("data-repo-leave", repoId);
             section.hidden = false;
             return data;
+        });
+    }
+
+    function activityLabel(action) {
+        var parts = String(action).split(".");
+        return parts.length === 2 ? parts[1] : action;
+    }
+
+    function loadRepositoryActivity(repoId) {
+        return fetch("/api/repositories/" + repoId + "/activity", {
+            headers: { Authorization: "Bearer " + token }
+        }).then(function (response) {
+            if (!response.ok) throw new Error("You do not have access to this repository");
+            return response.json();
+        }).then(function (items) {
+            var section = document.getElementById("repo-activity-panel");
+            var list = document.getElementById("repo-activity-list");
+            if (items.length === 0) {
+                list.innerHTML = '<li><span class="muted">No activity recorded yet.</span></li>';
+            } else {
+                list.innerHTML = items.map(function (item) {
+                    var detail = item.after ? " &rarr; " + escapeHtml(item.after) : (item.before ? " (" + escapeHtml(item.before) + ")" : "");
+                    return "<li><span class=\"muted\">" + new Date(item.timestamp).toLocaleString() + "</span> " +
+                        badge({ label: activityLabel(item.action), kind: "muted" }) + " " +
+                        escapeHtml(item.actorEmail) + detail + "</li>";
+                }).join("");
+            }
+            section.hidden = false;
         });
     }
 
@@ -663,6 +692,16 @@
                 if (!response.ok) throw new Error("Failed to restore repository");
                 return loadArchived().then(function () { return load(); });
             }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-repo-activity]");
+        if (button) {
+            loadRepositoryActivity(button.getAttribute("data-repo-activity")).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-activity-close]");
+        if (button) {
+            document.getElementById("repo-activity-panel").hidden = true;
             return;
         }
         button = event.target.closest("[data-repo-members]");

@@ -154,5 +154,10 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("loadArchived", js);
         Assert.Contains("\"/api/repositories/\" + archiveId + \"/archive\"", js);
         Assert.Contains("\"/api/repositories/\" + unarchiveId + \"/unarchive\"", js);
+        Assert.Contains("repo-activity-panel", html2);
+        Assert.Contains("data-repo-activity", js);
+        Assert.Contains("data-activity-close", js);
+        Assert.Contains("loadRepositoryActivity", js);
+        Assert.Contains("\"/api/repositories/\" + repoId + \"/activity\"", js);
     }
 }
