@@ -111,5 +111,10 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("data-ping", js);
         Assert.Contains("\"/api/webhooks/\" + pingId", js);
         Assert.Contains("/test", js);
+        Assert.Contains("data-log", js);
+        Assert.Contains("\"/api/webhooks/\" + webhookId + \"/deliveries?pageSize=20\"", js);
+        Assert.Contains("data-retry-delivery", js);
+        Assert.Contains("\"/deliveries/\" + deliveryId + \"/retry\"", js);
+        Assert.Contains("renderDeliveryLog", js);
     }
 }

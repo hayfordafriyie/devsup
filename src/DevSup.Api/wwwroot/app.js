@@ -174,11 +174,56 @@
                 return "<li>" + channelBadge(w.channel) + " " + name +
                     ' <a href="' + escapeHtml(w.url) + '" target="_blank" rel="noopener">' + escapeHtml(w.url) + "</a>" +
                     '<span class="muted">&nbsp;&middot; ' + events + "</span>" +
+                    '<button data-log="' + w.id + '" title="Delivery log">Log</button>' +
                     '<button data-ping="' + w.id + '" title="Send a signed test ping">Ping</button>' +
-                    '<button data-delete="' + w.id + '">Delete</button></li>';
+                    '<button data-delete="' + w.id + '">Delete</button>' +
+                    '<div class="delivery-log" data-log-target="' + w.id + '" hidden></div></li>';
             }).join("");
         }
         section.hidden = false;
+    }
+
+    function renderDeliveryLog(webhookId, page) {
+        var container = document.querySelector('[data-log-target="' + webhookId + '"]');
+        if (!container) {
+            return;
+        }
+        if (page.items.length === 0) {
+            container.innerHTML = '<p class="muted">No deliveries yet.</p>';
+            container.hidden = false;
+            return;
+        }
+        container.innerHTML = '<table class="delivery-log-table"><thead><tr>' +
+            "<th>Event</th><th>Status</th><th>Attempts</th><th>Created</th><th>Last error</th><th></th>" +
+            "</tr></thead><tbody>" + page.items.map(function (d) {
+                var status = d.sent
+                    ? '<span class="status ok">Sent</span>'
+                    : '<span class="status warn">Pending</span>';
+                var action = d.sent ? "" : '<button data-retry-delivery="' + d.id + '" data-webhook="' + webhookId + '">Retry</button>';
+                return "<tr>" +
+                    "<td>" + escapeHtml(d.event) + "</td>" +
+                    "<td>" + status + "</td>" +
+                    "<td>" + d.attempts + "</td>" +
+                    "<td>" + escaped(new Date(d.createdAt).toLocaleString()) + "</td>" +
+                    "<td>" + escaped(d.lastError) + "</td>" +
+                    "<td>" + action + "</td>" +
+                    "</tr>";
+            }).join("") + "</tbody></table>";
+        container.hidden = false;
+    }
+
+    async function toggleDeliveryLog(webhookId) {
+        var container = document.querySelector('[data-log-target="' + webhookId + '"]');
+        if (!container) {
+            return;
+        }
+        if (!container.hidden) {
+            container.hidden = true;
+            container.innerHTML = "";
+            return;
+        }
+        var page = await api("/api/webhooks/" + webhookId + "/deliveries?pageSize=20");
+        renderDeliveryLog(webhookId, page);
     }
 
     function renderAdminUsers(users) {
@@ -393,6 +438,25 @@
             }).then(function (response) {
                 if (!response.ok) throw new Error("Failed to delete webhook");
                 return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-log]");
+        if (button) {
+            var logId = button.getAttribute("data-log");
+            toggleDeliveryLog(logId).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-retry-delivery]");
+        if (button) {
+            var deliveryId = button.getAttribute("data-retry-delivery");
+            var webhookId = button.getAttribute("data-webhook");
+            fetch("/api/webhooks/" + webhookId + "/deliveries/" + deliveryId + "/retry", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to retry delivery");
+                return toggleDeliveryLog(webhookId);
             }).catch(function (e) { showError(e.message); });
             return;
         }
