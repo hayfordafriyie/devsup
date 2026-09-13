@@ -21,6 +21,8 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
 
     public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();
 
+    public DbSet<RepositoryMember> RepositoryMembers => Set<RepositoryMember>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>(entity =>
@@ -150,6 +152,14 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.HasKey(p => p.Id);
             entity.HasIndex(p => new { p.UserId, p.RepositoryId }).IsUnique();
             entity.Property(p => p.EmailEnabled).HasDefaultValue(true);
+        });
+
+        modelBuilder.Entity<RepositoryMember>(entity =>
+        {
+            entity.ToTable("repository_members");
+            entity.HasKey(m => new { m.RepositoryId, m.UserId });
+            entity.Property(m => m.Role).HasConversion<int>();
+            entity.HasIndex(m => new { m.RepositoryId, m.UserId }).IsUnique();
         });
 
         base.OnModelCreating(modelBuilder);

@@ -78,6 +78,10 @@ public sealed record TicketDetailResponse(
     string? ExceptionMessage,
     DateTimeOffset OccurredAt);
 
+public sealed record AddRepositoryMemberRequest(string Email, string Role = "operator");
+
+public sealed record RepositoryMemberResponse(Guid UserId, string Email, string DisplayName, string Role, DateTimeOffset CreatedAt);
+
 public sealed record AiKeyResponse(AiModelProvider Provider, string Model, string? KeyMask, DateTimeOffset UpdatedAt);
 
 public sealed record CreateWebhookRequest(string Url, List<WebhookEvent>? Events = null, string? Name = null, WebhookChannel Channel = WebhookChannel.Http);

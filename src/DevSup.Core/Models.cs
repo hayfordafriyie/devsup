@@ -176,6 +176,15 @@ public sealed record WebhookDelivery
     public DateTimeOffset CreatedAt { get; init; }
 }
 
+/// <summary>A registered user with access to another user's repository.</summary>
+public sealed record RepositoryMember
+{
+    public required Guid RepositoryId { get; init; }
+    public required Guid UserId { get; init; }
+    public MemberRole Role { get; init; } = MemberRole.Operator;
+    public DateTimeOffset CreatedAt { get; init; }
+}
+
 public sealed record NotificationPreference
 {
     public required Guid Id { get; init; }

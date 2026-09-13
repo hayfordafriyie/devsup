@@ -740,7 +740,8 @@ app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db,
     var ownerId = user.GetUserId();
     var repositories = await db.ConnectedRepositories
         .AsNoTracking()
-        .Where(r => r.OwnerUserId == ownerId)
+        .Where(r => r.OwnerUserId == ownerId
+            || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))
         .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl, r.RepairMode, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError))
         .ToListAsync(ct);
 
@@ -796,6 +797,104 @@ app.MapPost("/api/repositories/{id:guid}/unpause", async (Guid id, ClaimsPrincip
         repository.Id.ToString(), after: $"{repository.CloneUrl} resumed", ct: ct);
 
     return Results.Ok(new { repositoryId = repository.Id, paused = false });
+}).RequireAuthorization();
+
+app.MapGet("/api/repositories/{id:guid}/members", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var owned = await db.ConnectedRepositories.AsNoTracking()
+        .AnyAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+    if (!owned)
+    {
+        return Results.NotFound();
+    }
+
+    var members = await (from m in db.RepositoryMembers.AsNoTracking()
+                         join u in db.Users.AsNoTracking() on m.UserId equals u.Id
+                         where m.RepositoryId == id
+                         orderby m.CreatedAt
+                         select new RepositoryMemberResponse(u.Id, u.Email, u.DisplayName, m.Role.ToString(), m.CreatedAt))
+        .ToListAsync(ct);
+
+    return Results.Ok(members);
+}).RequireAuthorization();
+
+app.MapPost("/api/repositories/{id:guid}/members", async (Guid id, AddRepositoryMemberRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var repository = await db.ConnectedRepositories.AsNoTracking()
+        .FirstOrDefaultAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+    if (repository is null)
+    {
+        return Results.NotFound();
+    }
+
+    var member = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Email == request.Email, ct);
+    if (member is null || member.Id == ownerId)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "No other registered user has that email.");
+    }
+
+    var role = request.Role switch
+    {
+        var r when string.Equals(r, "observer", StringComparison.OrdinalIgnoreCase) => MemberRole.Observer,
+        var r when string.Equals(r, "operator", StringComparison.OrdinalIgnoreCase) => MemberRole.Operator,
+        _ => (MemberRole?)null
+    };
+    if (role is null)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Role must be observer or operator.");
+    }
+
+    var resolvedRole = role.Value;
+
+    var existing = await db.RepositoryMembers
+        .FirstOrDefaultAsync(m => m.RepositoryId == id && m.UserId == member.Id, ct);
+    if (existing is null)
+    {
+        db.RepositoryMembers.Add(new RepositoryMember
+        {
+            RepositoryId = id,
+            UserId = member.Id,
+            Role = resolvedRole,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+    }
+    else
+    {
+        db.Entry(existing).Property(m => m.Role).CurrentValue = resolvedRole;
+    }
+
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "repository.share", "RepositoryMember",
+        $"{id}/{member.Id}", after: $"{member.Email} as {resolvedRole}", ct: ct);
+
+    return Results.Ok(new RepositoryMemberResponse(member.Id, member.Email, member.DisplayName, resolvedRole.ToString(), existing?.CreatedAt ?? DateTimeOffset.UtcNow));
+}).RequireAuthorization();
+
+app.MapDelete("/api/repositories/{id:guid}/members/{userId:guid}", async (Guid id, Guid userId, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var owned = await db.ConnectedRepositories.AsNoTracking()
+        .AnyAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+    if (!owned)
+    {
+        return Results.NotFound();
+    }
+
+    var membership = await db.RepositoryMembers.FirstOrDefaultAsync(m => m.RepositoryId == id && m.UserId == userId, ct);
+    if (membership is null)
+    {
+        return Results.NotFound();
+    }
+
+    var email = (await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId, ct))?.Email ?? userId.ToString();
+    db.RepositoryMembers.Remove(membership);
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "repository.unshare", "RepositoryMember",
+        $"{id}/{userId}", before: email, ct: ct);
+
+    return Results.NoContent();
 }).RequireAuthorization();
 
 app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest httpRequest, ClaimsPrincipal user, DevSupDbContext db, IFailureClassifier classifier, CancellationToken ct) =>
@@ -910,7 +1009,7 @@ app.MapPost("/api/tickets/{ticketId:guid}/redispatch", async (Guid ticketId, Cla
 
     var ticket = await db.RepairTickets
         .FirstOrDefaultAsync(t => t.Id == ticketId
-            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId), ct);
+            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))), ct);
 
     if (ticket is null)
     {
@@ -938,7 +1037,8 @@ app.MapGet("/api/tickets", async (Guid? repositoryId, ClaimsPrincipal user, DevS
     var tickets = (await (
             from t in db.RepairTickets.AsNoTracking()
             join f in db.FailureEvents.AsNoTracking() on t.FailureEventId equals f.Id
-            where db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId)
+            where db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId
+                && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
             select new { Ticket = t, Failure = f }).ToListAsync(ct))
         .Where(x => repositoryId is null || x.Ticket.RepositoryId == repositoryId)
         .OrderByDescending(x => x.Ticket.UpdatedAt)
@@ -968,8 +1068,9 @@ app.MapGet("/api/tickets/{ticketId:guid}", async (Guid ticketId, ClaimsPrincipal
 
     var ticket = await (from t in db.RepairTickets.AsNoTracking()
                         join f in db.FailureEvents.AsNoTracking() on t.FailureEventId equals f.Id
-                        where t.Id == ticketId
-                            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId)
+where t.Id == ticketId
+                        && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId
+                            && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
                         select new { Ticket = t, Failure = f }).FirstOrDefaultAsync(ct);
 
     if (ticket is null)
@@ -990,7 +1091,7 @@ app.MapPost("/api/tickets/{ticketId:guid}/close", async (Guid ticketId, ClaimsPr
 
     var ticket = await db.RepairTickets
         .FirstOrDefaultAsync(t => t.Id == ticketId
-            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId), ct);
+            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))), ct);
 
     if (ticket is null)
     {
@@ -1019,7 +1120,7 @@ app.MapPost("/api/tickets/{ticketId:guid}/reopen", async (Guid ticketId, ClaimsP
 
     var ticket = await db.RepairTickets
         .FirstOrDefaultAsync(t => t.Id == ticketId
-            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId), ct);
+            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))), ct);
 
     if (ticket is null)
     {
@@ -1048,13 +1149,15 @@ app.MapGet("/api/overview", async (ClaimsPrincipal user, DevSupDbContext db, Can
 
     var repositories = await db.ConnectedRepositories
         .AsNoTracking()
-        .Where(r => r.OwnerUserId == ownerId)
+        .Where(r => r.OwnerUserId == ownerId
+            || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))
         .Select(r => new RepositoryHealthRow(r.Id, r.CloneUrl, r.AppUrl, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Paused, r.PausedAt))
         .ToListAsync(ct);
 
     var tickets = await db.RepairTickets
         .AsNoTracking()
-        .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId))
+        .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId
+            && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))))
         .ToListAsync(ct);
 
     var counts = new TicketSummary(
@@ -1086,7 +1189,8 @@ app.MapGet("/api/failures", async (ClaimsPrincipal user, DevSupDbContext db, Can
         from f in db.FailureEvents.AsNoTracking()
         join t in db.RepairTickets.AsNoTracking() on f.Id equals t.FailureEventId into tj
         from t in tj.DefaultIfEmpty()
-        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId && r.OwnerUserId == ownerId)
+        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId
+                && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
         select new { Failure = f, Ticket = t };
     if (repositoryId is not null)
     {
@@ -1138,7 +1242,8 @@ app.MapGet("/api/failures/export", async (ClaimsPrincipal user, DevSupDbContext 
         from f in db.FailureEvents.AsNoTracking()
         join t in db.RepairTickets.AsNoTracking() on f.Id equals t.FailureEventId into tj
         from t in tj.DefaultIfEmpty()
-        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId && r.OwnerUserId == ownerId)
+        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId
+                && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
         select new { Failure = f, Ticket = t };
     if (repositoryId is not null)
     {
@@ -1552,7 +1657,8 @@ app.MapPut("/api/notification-preferences", async (NotificationPreferenceRequest
 {
     var ownerId = user.GetUserId();
     var repoOwned = await db.ConnectedRepositories.AsNoTracking()
-        .AnyAsync(r => r.Id == request.RepositoryId && r.OwnerUserId == ownerId, ct);
+        .AnyAsync(r => r.Id == request.RepositoryId
+            && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)), ct);
     if (!repoOwned)
     {
         return Results.NotFound();

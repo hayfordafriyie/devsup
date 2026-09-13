@@ -90,3 +90,10 @@ public enum TicketStatus
     NeedsHumanReview,
     SkippedNotCodeError
 }
+
+/// <summary>Role a member has on a shared repository: observe (read) or operate (read + triage).</summary>
+public enum MemberRole
+{
+    Observer,
+    Operator
+}
