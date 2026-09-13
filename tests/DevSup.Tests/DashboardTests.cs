@@ -75,4 +75,21 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("exportCsv", js);
         Assert.Contains("/api/failures/export", js);
     }
+
+    [Fact]
+    public async Task Dashboard_PreferencesHooksPresent()
+    {
+        using var client = _factory.CreateClient();
+
+        var html = await (await client.GetAsync("/dashboard/")).Content.ReadAsStringAsync();
+        Assert.Contains("preferences-section", html);
+        Assert.Contains("preferences-toggle", html);
+        Assert.Contains("id=\"preferences\"", html);
+
+        var js = await (await client.GetAsync("/dashboard/app.js")).Content.ReadAsStringAsync();
+        Assert.Contains("loadPreferences", js);
+        Assert.Contains("/api/notification-preferences", js);
+        Assert.Contains("data-event", js);
+        Assert.Contains("savePreference", js);
+    }
 }

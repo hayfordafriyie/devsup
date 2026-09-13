@@ -89,6 +89,27 @@ main { padding: 1.5rem; }
     letter-spacing: 0.05em;
 }
 
+#preferences-section p { margin-top: 0.25rem; }
+
+.pref-repo { padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+
+.pref-repo:last-child { border-bottom: 0; }
+
+.pref-title { margin-bottom: 0.4rem; }
+
+.pref-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.9rem 1.2rem;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--muted);
+}
+
+.pref-controls label { display: inline-flex; align-items: center; gap: 0.3rem; cursor: pointer; }
+
+.pref-controls input { accent-color: var(--accent); }
+
 #export-csv { margin-bottom: 0.75rem; }
 
 #admin-audit { max-height: 24rem; overflow-y: auto; }

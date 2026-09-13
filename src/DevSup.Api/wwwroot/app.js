@@ -264,6 +264,62 @@
         URL.revokeObjectURL(url);
     }
 
+    var PREF_EVENTS = [
+        { event: "failureDetected", label: "Error detected" },
+        { event: "notCodeError", label: "Not a code error" },
+        { event: "fixPushed", label: "Fix pushed" },
+        { event: "fixPendingReview", label: "Fix ready for review" },
+        { event: "needsHumanReview", label: "Needs human review" }
+    ];
+
+    function renderPreferences(repositories, preferences) {
+        var container = document.getElementById("preferences");
+        if (repositories.length === 0) {
+            container.innerHTML = '<p class="muted">No connected repositories.</p>';
+            return;
+        }
+        container.innerHTML = repositories.map(function (repo) {
+            var pref = (preferences || []).find(function (p) { return p.repositoryId === repo.id; });
+            var emailEnabled = pref ? pref.emailEnabled : true;
+            var muted = pref ? pref.mutedEvents : [];
+            var master = '<label><input type="checkbox" data-repo="' + repo.id + '" data-field="emailEnabled"' +
+                (emailEnabled ? " checked" : "") + '> Email notifications</label>';
+            var events = PREF_EVENTS.map(function (e) {
+                var checked = muted.indexOf(e.event) !== -1 ? " checked" : "";
+                return '<label><input type="checkbox" data-repo="' + repo.id + '" data-event="' + e.event + '"' +
+                    checked + "> " + e.label + "</label>";
+            }).join("");
+            return '<div class="pref-repo">' +
+                '<div class="pref-title"><strong>' + escapeHtml(repoName(repo.cloneUrl)) + "</strong> <span class=\"muted\">" + escapeHtml(repo.cloneUrl) + "</span></div>" +
+                '<div class="pref-controls">' + master + events + "</div>" +
+                "</div>";
+        }).join("");
+    }
+
+    async function loadPreferences() {
+        var repos = await api("/api/repositories");
+        document.getElementById("preferences-toggle").hidden = repos.length === 0;
+        if (document.getElementById("preferences-section").hidden) return;
+        var preferences = await api("/api/notification-preferences");
+        renderPreferences(repos, preferences);
+    }
+
+    function savePreference(container) {
+        var master = container.querySelector('[data-field="emailEnabled"]');
+        var repoId = master.getAttribute("data-repo");
+        var mutedEvents = Array.prototype.map.call(
+            container.querySelectorAll('[data-event]:checked'),
+            function (box) { return box.getAttribute("data-event"); }
+        );
+        return fetch("/api/notification-preferences", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+            body: JSON.stringify({ repositoryId: repoId, emailEnabled: master.checked, mutedEvents: mutedEvents })
+        }).then(function (response) {
+            if (!response.ok) throw new Error("Failed to save notification preferences");
+        });
+    }
+
     async function load() {
         var overview = await api("/api/overview");
         var tickets = await api("/api/tickets");
@@ -273,6 +329,7 @@
         renderTickets(tickets);
         renderWebhooks(webhooks);
         await loadAdmin();
+        await loadPreferences();
     }
 
     function showSession() {
@@ -339,6 +396,20 @@
         if (!section.hidden) {
             loadAdmin().catch(function (e) { showError(e.message); });
         }
+    });
+
+    document.getElementById("preferences-toggle").addEventListener("click", function () {
+        var section = document.getElementById("preferences-section");
+        section.hidden = !section.hidden;
+        if (!section.hidden) {
+            loadPreferences().catch(function (e) { showError(e.message); });
+        }
+    });
+
+    document.getElementById("preferences").addEventListener("change", function (event) {
+        var container = event.target.closest(".pref-repo");
+        if (!container) return;
+        savePreference(container).catch(function (e) { showError(e.message); });
     });
 
     document.getElementById("export-csv").addEventListener("click", function () {
