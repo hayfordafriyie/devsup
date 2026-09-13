@@ -95,6 +95,46 @@ public sealed class AdminFleetTests : IAsyncLifetime
         Assert.True(overview.UnhealthyRepos >= 0);
     }
 
+    [Fact]
+    public async Task FleetExport_IsAdminOnlyAndReturnsCsv()
+    {
+        var memberToken = await Helpers.LoginAndGetTokenAsync(_client, "fleet-exp-member@test.dev", "Fleet Exp Member");
+        Assert.Equal(HttpStatusCode.Forbidden, (await GetAsync("/api/admin/repositories/export", memberToken)).StatusCode);
+
+        var adminToken = await Helpers.LoginAndGetTokenAsync(_client, "fleet-exp-admin@test.dev", "Fleet Exp Admin");
+        await PromoteToAdminAsync("fleet-exp-admin@test.dev");
+
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "fleet-exp-owner@test.dev", "Fleet Exp Owner");
+        var repo = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/fleet-exp.git");
+        await SetHealthAsync(repo, true);
+
+        var response = await GetAsync("/api/admin/repositories/export", adminToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType!.MediaType);
+        var csv = await response.Content.ReadAsStringAsync();
+        Assert.StartsWith("repositoryId,ownerEmail,provider,cloneUrl,defaultBranch,appUrl,health,paused,archived,openTickets,totalFailures,connectedAtUtc", csv);
+        Assert.Contains("fleet-exp-owner@test.dev", csv);
+        Assert.Contains("https://github.com/acme/fleet-exp.git", csv);
+        Assert.Contains(",healthy,", csv);
+    }
+
+    [Fact]
+    public async Task FleetExport_RespectsHealthFilter()
+    {
+        var adminToken = await Helpers.LoginAndGetTokenAsync(_client, "fleet-expf-admin@test.dev", "Fleet ExpF Admin");
+        await PromoteToAdminAsync("fleet-expf-admin@test.dev");
+
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "fleet-expf-owner@test.dev", "Fleet ExpF Owner");
+        var healthy = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/fe-h.git");
+        var unhealthy = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/fe-u.git");
+        await SetHealthAsync(healthy, true);
+        await SetHealthAsync(unhealthy, false);
+
+        var csv = await (await GetAsync("/api/admin/repositories/export?health=unhealthy", adminToken)).Content.ReadAsStringAsync();
+        Assert.Contains("https://github.com/acme/fe-u.git", csv);
+        Assert.DoesNotContain("https://github.com/acme/fe-h.git", csv);
+    }
+
     private async Task<HttpResponseMessage> GetAsync(string path, string token)
     {
         var request = new HttpRequestMessage(HttpMethod.Get, path);

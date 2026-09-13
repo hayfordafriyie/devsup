@@ -1796,6 +1796,91 @@ app.MapGet("/api/admin/repositories", async (ClaimsPrincipal user, DevSupDbConte
     return Results.Ok(new AdminRepositoryPage(rows, page, pageSize, total));
 }).RequireAuthorization();
 
+app.MapGet("/api/admin/repositories/export", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct,
+    string? health = null, string? owner = null, bool? paused = null, bool? archived = null) =>
+{
+    if (!await IsAdminAsync(user, db, ct))
+    {
+        return Results.Forbid();
+    }
+
+    var query =
+        from r in db.ConnectedRepositories.AsNoTracking()
+        join u in db.Users.AsNoTracking() on r.OwnerUserId equals u.Id
+        select new { Repository = r, OwnerEmail = u.Email };
+
+    if (string.Equals(health, "healthy", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Where(x => x.Repository.AppHealthy == true);
+    }
+    else if (string.Equals(health, "unhealthy", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Where(x => x.Repository.AppHealthy == false);
+    }
+    else if (string.Equals(health, "unchecked", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Where(x => x.Repository.AppHealthy == null);
+    }
+    if (!string.IsNullOrWhiteSpace(owner))
+    {
+        query = query.Where(x => x.OwnerEmail == owner);
+    }
+    if (paused is not null)
+    {
+        query = query.Where(x => x.Repository.Paused == paused);
+    }
+    if (archived is not null)
+    {
+        query = query.Where(x => x.Repository.Archived == archived);
+    }
+
+    var rows = await query
+        .OrderBy(x => x.Repository.CloneUrl)
+        .Select(x => new AdminRepositoryRow(
+            x.Repository.Id,
+            x.OwnerEmail,
+            x.Repository.CloneUrl,
+            x.Repository.Provider.ToString(),
+            x.Repository.DefaultBranch,
+            x.Repository.AppUrl,
+            x.Repository.AppHealthy,
+            x.Repository.AppHealthCheckedAt,
+            x.Repository.AppHealthLastError,
+            x.Repository.Paused,
+            x.Repository.Archived,
+            db.RepairTickets.Count(t => t.RepositoryId == x.Repository.Id
+                && (t.Status == TicketStatus.New
+                    || t.Status == TicketStatus.Triaged
+                    || t.Status == TicketStatus.Investigating
+                    || t.Status == TicketStatus.PatchProposed
+                    || t.Status == TicketStatus.FixPendingReview)),
+            db.FailureEvents.Count(f => f.RepositoryId == x.Repository.Id),
+            x.Repository.ConnectedAt))
+        .ToListAsync(ct);
+
+    var csv = new StringBuilder();
+    csv.AppendLine("repositoryId,ownerEmail,provider,cloneUrl,defaultBranch,appUrl,health,paused,archived,openTickets,totalFailures,connectedAtUtc");
+    foreach (var row in rows)
+    {
+        var healthLabel = row.AppHealthy == true ? "healthy" : row.AppHealthy == false ? "unhealthy" : "unchecked";
+        csv.Append(CsvEscape(row.Id.ToString())).Append(',');
+        csv.Append(CsvEscape(row.OwnerEmail)).Append(',');
+        csv.Append(CsvEscape(row.Provider)).Append(',');
+        csv.Append(CsvEscape(row.CloneUrl)).Append(',');
+        csv.Append(CsvEscape(row.DefaultBranch)).Append(',');
+        csv.Append(CsvEscape(row.AppUrl)).Append(',');
+        csv.Append(healthLabel).Append(',');
+        csv.Append(row.Paused).Append(',');
+        csv.Append(row.Archived).Append(',');
+        csv.Append(row.OpenTickets).Append(',');
+        csv.Append(row.TotalFailures).Append(',');
+        csv.AppendLine(CsvEscape(row.ConnectedAt.ToString("O")));
+    }
+
+    var bytes = Encoding.UTF8.GetBytes(csv.ToString());
+    return Results.File(bytes, "text/csv", $"devsup-fleet-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+}).RequireAuthorization();
+
 app.MapGet("/api/admin/users", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
     if (!await IsAdminAsync(user, db, ct))

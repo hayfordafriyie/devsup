@@ -590,6 +590,22 @@
         URL.revokeObjectURL(url);
     }
 
+    async function exportFleetCsv() {
+        var response = await fetch("/api/admin/repositories/export", {
+            headers: { Authorization: "Bearer " + token }
+        });
+        if (!response.ok) throw new Error("Failed to export fleet CSV");
+        var blob = await response.blob();
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.href = url;
+        link.download = "devsup-fleet.csv";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    }
+
     var PREF_EVENTS = [
         { event: "failureDetected", label: "Error detected" },
         { event: "notCodeError", label: "Not a code error" },
@@ -1090,6 +1106,10 @@
 
     document.getElementById("export-csv").addEventListener("click", function () {
         exportCsv().catch(function (e) { showError(e.message); });
+    });
+
+    document.getElementById("export-fleet").addEventListener("click", function () {
+        exportFleetCsv().catch(function (e) { showError(e.message); });
     });
 
     var form = document.getElementById("webhook-form");
