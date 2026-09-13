@@ -174,6 +174,7 @@
                 return "<li>" + channelBadge(w.channel) + " " + name +
                     ' <a href="' + escapeHtml(w.url) + '" target="_blank" rel="noopener">' + escapeHtml(w.url) + "</a>" +
                     '<span class="muted">&nbsp;&middot; ' + events + "</span>" +
+                    '<button data-ping="' + w.id + '" title="Send a signed test ping">Ping</button>' +
                     '<button data-delete="' + w.id + '">Delete</button></li>';
             }).join("");
         }
@@ -320,6 +321,35 @@
         });
     }
 
+    function renderEmails(page) {
+        var section = document.getElementById("delivery-section");
+        var tbody = document.getElementById("emails").querySelector("tbody");
+        if (!page || page.items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="muted">No emails in your outbox.</td></tr>';
+        } else {
+            tbody.innerHTML = page.items.map(function (e) {
+                var status = e.sent
+                    ? '<span class="status ok">Sent</span>'
+                    : '<span class="status warn">Queued</span>';
+                var action = e.sent ? "" : '<button data-retry-email="' + e.id + '">Retry</button>';
+                return "<tr>" +
+                    "<td>" + escapeHtml(e.to) + "</td>" +
+                    "<td>" + escapeHtml(e.subject) + "</td>" +
+                    "<td>" + status + "</td>" +
+                    "<td>" + e.attempts + "</td>" +
+                    "<td>" + escaped(e.lastError) + "</td>" +
+                    "<td>" + action + "</td>" +
+                    "</tr>";
+            }).join("");
+        }
+        section.hidden = false;
+    }
+
+    async function loadEmails() {
+        var page = await api("/api/emails?pageSize=50");
+        renderEmails(page);
+    }
+
     async function load() {
         var overview = await api("/api/overview");
         var tickets = await api("/api/tickets");
@@ -330,6 +360,7 @@
         renderWebhooks(webhooks);
         await loadAdmin();
         await loadPreferences();
+        await loadEmails();
     }
 
     function showSession() {
@@ -362,6 +393,30 @@
             }).then(function (response) {
                 if (!response.ok) throw new Error("Failed to delete webhook");
                 return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-ping]");
+        if (button) {
+            var pingId = button.getAttribute("data-ping");
+            fetch("/api/webhooks/" + pingId + "/test", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to ping webhook");
+                return loadEmails();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-retry-email]");
+        if (button) {
+            var emailId = button.getAttribute("data-retry-email");
+            fetch("/api/emails/" + emailId + "/retry", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to retry email");
+                return loadEmails();
             }).catch(function (e) { showError(e.message); });
             return;
         }

@@ -92,4 +92,24 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("data-event", js);
         Assert.Contains("savePreference", js);
     }
+
+    [Fact]
+    public async Task Dashboard_DeliveryCenterHooksPresent()
+    {
+        using var client = _factory.CreateClient();
+
+        var html = await (await client.GetAsync("/dashboard/")).Content.ReadAsStringAsync();
+        Assert.Contains("delivery-section", html);
+        Assert.Contains("id=\"emails\"", html);
+
+        var js = await (await client.GetAsync("/dashboard/app.js")).Content.ReadAsStringAsync();
+        Assert.Contains("loadEmails", js);
+        Assert.Contains("/api/emails?pageSize=50", js);
+        Assert.Contains("renderEmails", js);
+        Assert.Contains("data-retry-email", js);
+        Assert.Contains("\"/api/emails/\" + emailId", js);
+        Assert.Contains("data-ping", js);
+        Assert.Contains("\"/api/webhooks/\" + pingId", js);
+        Assert.Contains("/test", js);
+    }
 }
