@@ -5,13 +5,12 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.14** — the **repair verification & delivery deep-dive** release.
-> Pushed fixes no longer need blind trust: a **verification worker** (`Verification:`)
-> re-probes the app URL after a fix lands and flips the ticket to `FixVerified` — with a
-> confirmation email — only when the app is actually healthy again. Digests become
-> personal: `PUT /api/account` toggles `digestEnabled` per user, and opted-out users get
-> skipped. The dashboard's webhooks gain per-endpoint **delivery logs** with one-click
-> retry. 150 tests passing.
+> Project status: **v0.15** — the **incident triage & account controls** release. Every
+> repair ticket is inspectable end-to-end (`GET /api/tickets/{id}`: exception message,
+> analysis, patch, commit/PR links) and closable or reopenable with one audited call
+> (`POST /api/tickets/{id}/close|/reopen`). The dashboard's **View** button opens the
+> incident with close/reopen actions, and a new **Account** panel puts the daily-digest
+> toggle (`PUT /api/account digestEnabled`) one click away. 155 tests passing.
 
 ---
 
@@ -262,6 +261,22 @@ down at notify time, an agent that stalled mid-repair.
 
 Both are scoped strictly to the authenticated user's repositories.
 
+### Ticket detail & triage (v0.15)
+
+Tickets are inspectable and actionable without guessing:
+
+- `GET /api/tickets/{ticketId}` — full incident detail: repository, `METHOD path` with
+  HTTP status, exception message, category/kind, agent analysis, patch summary, commit
+  /pull-request links, occurrence and last-updated timestamps.
+- `POST /api/tickets/{ticketId}/close` — marks a ticket `closed` (409 when it already
+  is), audited as `ticket.close`.
+- `POST /api/tickets/{ticketId}/reopen` — returns a closed ticket to `new` so the repair
+  worker can attack it again (409 unless closed), audited as `ticket.reopen`.
+
+Scoped to the owner's repositories like every ticket route. The dashboard's **View**
+button on each ticket row opens the full incident; **Close ticket** / **Reopen ticket**
+act on it immediately, and each change is written to the audit trail.
+
 ## 10. Platform admin & data retention
 
 ### Platform admin (multi-tenant)
@@ -311,6 +326,7 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
 - `account.profileUpdate`, `account.passwordChange` — self-service profile/password changes
 - `webhook.test`, `webhook.retry` — delivery operations
 - `email.retry` — re-queuing a failed outbound email
+- `ticket.close`, `ticket.reopen` — ticket lifecycle (triage) operations
 
 `GET /api/admin/audit` (admin-only) lists the latest 200 entries, filterable by
 `actor`, `action`, and `entityType`. Failure ingestion is deliberately **not** audited
@@ -483,6 +499,9 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/tickets?repositoryId=` | Bearer | Filter tickets to one repository |
 | `POST` | `/api/failures/{failureId}/replay` | Bearer | Re-send email + webhook notifications for a past failure |
 | `POST` | `/api/tickets/{ticketId}/redispatch` | Bearer | Return a new/needs-review ticket to the repair queue |
+| `GET` | `/api/tickets/{ticketId}` | Bearer | Full incident detail for one ticket |
+| `POST` | `/api/tickets/{ticketId}/close` | Bearer | Mark a ticket closed (audited) |
+| `POST` | `/api/tickets/{ticketId}/reopen` | Bearer | Reopen a closed ticket into the repair queue (audited) |
 | `GET` | `/api/failures` | Bearer | Paginated failure history joined to tickets (`repositoryId`, `from`, `to`, `status`, `page`, `pageSize`) |
 | `GET` | `/api/failures/export` | Bearer | CSV export of the same filtered failure history |
 | `POST` | `/api/webhooks` | Bearer | Register a webhook endpoint (returns the signing secret once; `channel` = http/slack/teams) |
@@ -543,6 +562,7 @@ push/PR to `master`.
 - **v0.12** *(done)* — self-service & delivery ops: account profile/password API (audited), webhook ping test + failed-delivery retry, notification-preferences panel in the dashboard
 - **v0.13** *(done)* — delivery center: email outbox log + retry API, scheduled daily digest emails, Delivery center panel with outbox retry and webhook ping in the dashboard
 - **v0.14** *(done)* — repair verification & delivery deep-dive: probe-confirmed `FixVerified` with confirmation emails, per-user digest opt-out, per-webhook delivery log with retry in the dashboard
+- **v0.15** *(done)* — incident triage & account controls: ticket detail + close/reopen API (audited), dashboard incident view with triage actions, Account panel with daily-digest toggle
 
 ---
 
