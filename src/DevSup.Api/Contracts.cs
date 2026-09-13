@@ -18,7 +18,10 @@ public sealed record RepositoryResponse(
     string CloneUrl,
     string DefaultBranch,
     string? AppUrl,
-    RepairMode RepairMode);
+    RepairMode RepairMode,
+    bool? AppHealthy = null,
+    DateTimeOffset? AppHealthCheckedAt = null,
+    string? AppHealthLastError = null);
 
 public sealed record IngestFailureRequest(
     Guid RepositoryId,

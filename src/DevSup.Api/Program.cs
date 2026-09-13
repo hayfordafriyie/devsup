@@ -12,6 +12,7 @@ using DevSup.Core.Models;
 using DevSup.Core.Services;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Email;
+using DevSup.Infrastructure.HealthChecks;
 using DevSup.Infrastructure.Security;
 using DevSup.Infrastructure.Webhooks;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -73,6 +74,18 @@ builder.Services.AddScoped<WebhookOutboxProcessor>(sp => new WebhookOutboxProces
     sp.GetRequiredService<ILogger<WebhookOutboxProcessor>>(),
     webhookOptions.MaxAttempts));
 builder.Services.AddHostedService<WebhookOutboxWorker>();
+
+var healthOptions = new HealthCheckOptions
+{
+    Enabled = bool.TryParse(builder.Configuration["HealthChecks:Enabled"], out var healthEnabled) ? healthEnabled : true,
+    IntervalSeconds = int.TryParse(builder.Configuration["HealthChecks:IntervalSeconds"], out var healthInterval) ? healthInterval : 300,
+    TimeoutSeconds = int.TryParse(builder.Configuration["HealthChecks:TimeoutSeconds"], out var healthTimeout) ? healthTimeout : 10,
+    BatchSize = int.TryParse(builder.Configuration["HealthChecks:BatchSize"], out var healthBatch) ? healthBatch : 20
+};
+builder.Services.AddSingleton(healthOptions);
+builder.Services.AddSingleton<IAppUrlProber, HttpAppUrlProber>();
+builder.Services.AddScoped<AppHealthChecker>();
+builder.Services.AddHostedService<AppHealthCheckWorker>();
 
 var dataProtectionKey = builder.Configuration["Security:DataProtectionKey"]
     ?? "devsup-dev-only-data-protection-key-change-in-production";
@@ -565,7 +578,7 @@ app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsP
     }
 
     return Results.Created($"/api/repositories/{repository.Id}",
-        new RepositoryResponse(repository.Id, repository.Provider.ToString(), repository.CloneUrl, repository.DefaultBranch, repository.AppUrl, repository.RepairMode));
+        new RepositoryResponse(repository.Id, repository.Provider.ToString(), repository.CloneUrl, repository.DefaultBranch, repository.AppUrl, repository.RepairMode, repository.AppHealthy, repository.AppHealthCheckedAt, repository.AppHealthLastError));
 }).RequireAuthorization();
 
 app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
@@ -574,7 +587,7 @@ app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db,
     var repositories = await db.ConnectedRepositories
         .AsNoTracking()
         .Where(r => r.OwnerUserId == ownerId)
-        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl, r.RepairMode))
+        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl, r.RepairMode, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError))
         .ToListAsync(ct);
 
     return Results.Ok(repositories);

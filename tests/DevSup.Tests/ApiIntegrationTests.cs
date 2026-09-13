@@ -8,6 +8,7 @@ using DevSup.Agent.Ai;
 using DevSup.Agent.Git;
 using DevSup.Agent.PullRequests;
 using DevSup.Infrastructure.Email;
+using DevSup.Infrastructure.HealthChecks;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Security;
 using DevSup.Infrastructure.Webhooks;
@@ -58,6 +59,20 @@ public sealed class FakeWebhookDeliverer : IWebhookDeliverer
         Delivered.Add((url, secret, payload, webhookEvent));
         return Task.CompletedTask;
     }
+}
+
+public sealed class FakeAppUrlProber : IAppUrlProber
+{
+    public Queue<AppProbeResult> Results { get; } = new();
+
+    public AppProbeResult? Result { get; set; }
+
+    public AppProbeResult Healthy => new(true, 200, null);
+
+    public AppProbeResult Unhealthy => new(false, 500, "HTTP 500");
+
+    public Task<AppProbeResult> ProbeAsync(string url, TimeSpan timeout, CancellationToken ct)
+        => Task.FromResult(Results.Count > 0 ? Results.Dequeue() : (Result ?? Healthy));
 }
 
 public sealed class FakeGitHubGateway(GitHubAuthSettings settings) : IGitHubGateway
@@ -152,6 +167,8 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
 
     public FakeWebhookDeliverer WebhookDeliverer { get; } = new();
 
+    public FakeAppUrlProber Prober { get; } = new();
+
     public FakeGitAdapter Git { get; } = new();
 
     public FakePullRequestGateway PullRequests { get; } = new();
@@ -184,6 +201,7 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
                 ["GitLab:ClientSecret"] = "test-gitlab-client-secret",
                 ["Emailing:IntervalSeconds"] = "3600",
                 ["Webhooks:IntervalSeconds"] = "3600",
+                ["HealthChecks:IntervalSeconds"] = "3600",
                 ["Repairing:IntervalSeconds"] = "3600"
             });
         });
@@ -195,6 +213,7 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<DevSupDbContext>();
             services.RemoveAll<IEmailSender>();
             services.RemoveAll<IWebhookDeliverer>();
+            services.RemoveAll<IAppUrlProber>();
             services.RemoveAll<IGitHubGateway>();
             services.RemoveAll<GitHubAuthSettings>();
             services.RemoveAll<IGitLabGateway>();
@@ -207,6 +226,7 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
                 options.UseInMemoryDatabase("devsup-tests", _databaseRoot));
             services.AddSingleton<IEmailSender>(EmailSender);
             services.AddSingleton<IWebhookDeliverer>(WebhookDeliverer);
+            services.AddSingleton<IAppUrlProber>(Prober);
             services.AddSingleton<IGitHubGateway>(new FakeGitHubGateway(GitHubAuth));
             services.AddSingleton(GitHubAuth);
             services.AddSingleton<IGitLabGateway>(GitLab);

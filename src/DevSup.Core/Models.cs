@@ -20,10 +20,20 @@ public sealed record ConnectedRepository
     public required GitProvider Provider { get; init; }
     public required string CloneUrl { get; init; }
     public required string DefaultBranch { get; init; }
+
+    /// <summary>Public app URL probed periodically for liveness; failures become FailureEvents without the SDK.</summary>
     public string? AppUrl { get; init; }
 
     /// <summary>How the repair agent lands fixes into this repository.</summary>
     public RepairMode RepairMode { get; init; } = RepairMode.DirectPush;
+
+    /// <summary>Last observed app-URL health: true, false, or null (not checked yet).</summary>
+    public bool? AppHealthy { get; init; }
+
+    public DateTimeOffset? AppHealthCheckedAt { get; init; }
+
+    /// <summary>Diagnostic from the last probe (status code or transport error).</summary>
+    public string? AppHealthLastError { get; init; }
 
     public DateTimeOffset ConnectedAt { get; init; }
 }
