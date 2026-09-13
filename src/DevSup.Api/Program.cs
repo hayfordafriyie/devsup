@@ -1129,6 +1129,32 @@ app.MapGet("/api/webhooks", async (ClaimsPrincipal user, DevSupDbContext db, Can
     return Results.Ok(webhooks);
 }).RequireAuthorization();
 
+app.MapGet("/api/webhooks/{id:guid}/deliveries", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct,
+    int page = 1, int pageSize = 20) =>
+{
+    var owns = await db.WebhookEndpoints.AsNoTracking()
+        .AnyAsync(w => w.Id == id && w.UserId == user.GetUserId(), ct);
+    if (!owns)
+    {
+        return Results.NotFound();
+    }
+
+    page = Math.Max(1, page);
+    pageSize = Math.Clamp(pageSize, 1, 100);
+
+    var total = await db.WebhookDeliveries.CountAsync(d => d.WebhookId == id, ct);
+    var rows = await db.WebhookDeliveries
+        .AsNoTracking()
+        .Where(d => d.WebhookId == id)
+        .OrderByDescending(d => d.CreatedAt)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .Select(d => new WebhookDeliveryResponse(d.Id, d.Event.ToString(), d.Sent, d.SentAt, d.Attempts, d.LastError, d.CreatedAt))
+        .ToListAsync(ct);
+
+    return Results.Ok(new WebhookDeliveryPage(rows, page, pageSize, total));
+}).RequireAuthorization();
+
 app.MapDelete("/api/webhooks/{id:guid}", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
 {
     var webhook = await db.WebhookEndpoints.FirstOrDefaultAsync(w => w.Id == id && w.UserId == user.GetUserId(), ct);

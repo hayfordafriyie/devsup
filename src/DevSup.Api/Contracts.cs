@@ -136,3 +136,18 @@ public sealed record FailureHistoryPage(
     int Page,
     int PageSize,
     int Total);
+
+public sealed record WebhookDeliveryResponse(
+    Guid Id,
+    string Event,
+    bool Sent,
+    DateTimeOffset? SentAt,
+    int Attempts,
+    string? LastError,
+    DateTimeOffset CreatedAt);
+
+public sealed record WebhookDeliveryPage(
+    IReadOnlyList<WebhookDeliveryResponse> Items,
+    int Page,
+    int PageSize,
+    int Total);
