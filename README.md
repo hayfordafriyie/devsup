@@ -5,11 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.22** — the **bulk repository actions** release.
-> `POST /api/repositories/bulk` applies `pause` / `unpause` / `archive` / `unarchive`
-> to up to 100 owned repositories in one call, returning a per-repository result
-> (`ok` / `unchanged` / `forbidden` / `notFound`) and auditing each change. The
-> dashboard gains selection checkboxes and a bulk action bar. 214 tests passing.
+> Project status: **v0.23** — the **reporting** release. Daily digests now split activity
+> into **Your repositories** and **Shared with you** sections, and the repository
+> activity feed gains a CSV export
+> (`GET /api/repositories/{id}/activity/export`), downloadable from the dashboard's
+> Activity panel. 217 tests passing.
 
 ---
 
@@ -168,7 +168,9 @@ The email outbox is no longer a black box:
   no activity get nothing — no empty digests. Digests ride the normal email outbox, so
   they obey SMTP retries like everything else. Digests are **global opt-out per user**:
   `PUT /api/account` with `digestEnabled: false` silences the daily summary while
-  leaving transactional incident emails untouched.
+  leaving transactional incident emails untouched. Since v0.23 a digest that includes
+  shared repositories splits its counts into **Your repositories** and **Shared with
+  you** sections, so it's clear where the activity came from.
 
 The dashboard **Delivery center** renders the email outbox with one-click retry, and a
 `Ping` button per webhook endpoint fires a signed `devsup.ping`.
@@ -454,7 +456,10 @@ member changes (`repository.share` / `repository.unshare` / `repository.leave`),
 ticket triage on its incidents (`ticket.close` / `ticket.reopen`). Each item carries the
 **actor email**, action, before/after detail and timestamp, newest first. Entries are
 strictly filtered to the requested repository, so a member never sees activity from
-other repositories. The dashboard's **Activity** button opens the same timeline.
+other repositories. The dashboard's **Activity** button opens the same timeline, and
+`GET /api/repositories/{id}/activity/export` streams it as a UTF-8 CSV
+(`timestampUtc,action,actorEmail,before,after`) — the **Export CSV** button in the
+panel downloads it.
 
 ### Failure history & CSV export
 
@@ -626,6 +631,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `POST` | `/api/repositories/{id}/transfer` | Bearer | Transfer ownership to an operator member (owner becomes operator) |
 | `POST` | `/api/repositories/{id}/leave` | Bearer | Leave a shared repository (members only; owners must transfer first) |
 | `GET` | `/api/repositories/{id}/activity` | Bearer | Repo-scoped activity timeline (members can read; `limit` ≤ 200) |
+| `GET` | `/api/repositories/{id}/activity/export` | Bearer | Activity timeline as UTF-8 CSV |
 | `POST` | `/api/ingest` | Bearer | Report a failure; triaged into a repair ticket |
 | `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
 | `GET` | `/api/ai-keys` | Bearer | List your AI key bindings (masked) |
@@ -708,6 +714,7 @@ push/PR to `master`.
 - **v0.20** *(done)* — repository archiving: archive retires a repo from the repository list, overview, failure/ticket feeds and all background pipelines (health, repair, verification, digest) while retaining history; ingest returns `409`, `?archived=true` lists retired repos, dashboard Archived section restores them; audited, migration `AddRepositoryArchived`
 - **v0.21** *(done)* — repository activity feed: `GET /api/repositories/{id}/activity` returns a repo-scoped audit timeline (lifecycle, member changes, ticket triage) with actor/before/after/timestamp, readable by owners and shared members and strictly isolated per repository; dashboard Activity panel
 - **v0.22** *(done)* — bulk repository actions: `POST /api/repositories/bulk` applies pause/unpause/archive/unarchive to up to 100 owned repos with per-repo results (ok/unchanged/forbidden/notFound) and per-repo audits; dashboard selection checkboxes + bulk action bar
+- **v0.23** *(done)* — reporting: daily digests group activity into "Your repositories" vs "Shared with you" sections; repository activity feed gains a CSV export (`GET /api/repositories/{id}/activity/export`) with a dashboard Export CSV button
 
 ---
 
