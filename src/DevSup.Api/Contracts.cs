@@ -58,3 +58,28 @@ public sealed record CreateWebhookRequest(string Url, List<WebhookEvent>? Events
 public sealed record CreateWebhookResponse(Guid Id, string Url, string Secret, List<WebhookEvent> Events, DateTimeOffset CreatedAt);
 
 public sealed record WebhookResponse(Guid Id, string Url, List<WebhookEvent> Events, bool Active, DateTimeOffset CreatedAt);
+
+public sealed record RepositoryHealthRow(
+    Guid Id,
+    string CloneUrl,
+    string? AppUrl,
+    bool? AppHealthy,
+    DateTimeOffset? AppHealthCheckedAt,
+    string? AppHealthLastError);
+
+public sealed record TicketSummary(
+    int New,
+    int InProgress,
+    int PendingReview,
+    int Fixed,
+    int NeedsHumanReview,
+    int Total);
+
+/// <summary>Cross-repository aggregation used by dashboards.</summary>
+public sealed record OverviewResponse(
+    int RepositoryCount,
+    int HealthyRepos,
+    int UnhealthyRepos,
+    int UncheckedRepos,
+    IReadOnlyList<RepositoryHealthRow> Repositories,
+    TicketSummary Tickets);

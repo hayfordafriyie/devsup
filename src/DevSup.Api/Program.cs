@@ -687,14 +687,20 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest http
         new IngestResponse(failure.Id, ticket.Id, category.ToString(), kind.ToString(), status.ToString()));
 }).RequireAuthorization();
 
-app.MapGet("/api/tickets", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+app.MapGet("/api/tickets", async (Guid? repositoryId, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
     var ownerId = user.GetUserId();
 
-    var tickets = (await db.RepairTickets
+    var queries = db.RepairTickets
         .AsNoTracking()
-        .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId))
-        .ToListAsync(ct))
+        .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId));
+
+    if (repositoryId is not null)
+    {
+        queries = queries.Where(t => t.RepositoryId == repositoryId);
+    }
+
+    var tickets = (await queries.ToListAsync(ct))
         .OrderByDescending(t => t.UpdatedAt)
         .Select(t => new TicketResponse(
             t.Id,
@@ -711,6 +717,38 @@ app.MapGet("/api/tickets", async (ClaimsPrincipal user, DevSupDbContext db, Canc
         .ToList();
 
     return Results.Ok(tickets);
+}).RequireAuthorization();
+
+app.MapGet("/api/overview", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+
+    var repositories = await db.ConnectedRepositories
+        .AsNoTracking()
+        .Where(r => r.OwnerUserId == ownerId)
+        .Select(r => new RepositoryHealthRow(r.Id, r.CloneUrl, r.AppUrl, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError))
+        .ToListAsync(ct);
+
+    var tickets = await db.RepairTickets
+        .AsNoTracking()
+        .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId))
+        .ToListAsync(ct);
+
+    var counts = new TicketSummary(
+        New: tickets.Count(t => t.Status == TicketStatus.New),
+        InProgress: tickets.Count(t => t.Status is TicketStatus.Triaged or TicketStatus.Investigating or TicketStatus.PatchProposed),
+        PendingReview: tickets.Count(t => t.Status == TicketStatus.FixPendingReview),
+        Fixed: tickets.Count(t => t.Status is TicketStatus.FixPushed or TicketStatus.FixVerified or TicketStatus.Closed),
+        NeedsHumanReview: tickets.Count(t => t.Status == TicketStatus.NeedsHumanReview),
+        Total: tickets.Count);
+
+    return Results.Ok(new OverviewResponse(
+        RepositoryCount: repositories.Count,
+        HealthyRepos: repositories.Count(r => r.AppHealthy == true),
+        UnhealthyRepos: repositories.Count(r => r.AppHealthy == false),
+        UncheckedRepos: repositories.Count(r => r.AppHealthy is null),
+        Repositories: repositories,
+        Tickets: counts));
 }).RequireAuthorization();
 
 app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, CancellationToken ct) =>
