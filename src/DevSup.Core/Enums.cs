@@ -18,6 +18,19 @@ public enum RepairMode
     PullRequest
 }
 
+/// <summary>The provider a webhook endpoint delivers to; controls payload formatting.</summary>
+public enum WebhookChannel
+{
+    /// <summary>Raw JSON body exactly as queued, signed with the endpoint secret.</summary>
+    Http,
+
+    /// <summary>Formatted as an incoming-webhook message (mrkdwn blocks).</summary>
+    Slack,
+
+    /// <summary>Formatted as an Office 365 / Teams MessageCard.</summary>
+    Teams
+}
+
 /// <summary>Domain events broadcast to configured webhook endpoints.</summary>
 public enum WebhookEvent
 {

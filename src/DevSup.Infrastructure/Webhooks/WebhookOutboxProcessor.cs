@@ -45,7 +45,7 @@ public sealed class WebhookOutboxProcessor(
             try
             {
                 var secret = protector.Unprotect(endpoint.EncryptedSecret);
-                await deliverer.DeliverAsync(endpoint.Url, secret, delivery.Payload, delivery.Event, ct);
+                await deliverer.DeliverAsync(endpoint.Url, secret, delivery.Payload, delivery.Event, endpoint.Channel, ct);
                 entry.Property(d => d.Sent).CurrentValue = true;
                 entry.Property(d => d.SentAt).CurrentValue = DateTimeOffset.UtcNow;
                 entry.Property(d => d.Attempts).CurrentValue = delivery.Attempts + 1;

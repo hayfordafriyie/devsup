@@ -816,6 +816,8 @@ app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipa
         Id = Guid.NewGuid(),
         UserId = ownerId,
         Url = request.Url,
+        Name = string.IsNullOrWhiteSpace(request.Name) ? null : Truncate(request.Name.Trim(), 128),
+        Channel = request.Channel,
         EncryptedSecret = protector.Protect(secret),
         EventMask = EventsToMask(request.Events),
         CreatedAt = DateTimeOffset.UtcNow
@@ -825,7 +827,7 @@ app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipa
     await db.SaveChangesAsync(ct);
 
     return Results.Created($"/api/webhooks/{endpoint.Id}",
-        new CreateWebhookResponse(endpoint.Id, endpoint.Url, secret, ResolveEvents(endpoint.EventMask), endpoint.CreatedAt));
+        new CreateWebhookResponse(endpoint.Id, endpoint.Url, secret, ResolveEvents(endpoint.EventMask), endpoint.CreatedAt, endpoint.Name, endpoint.Channel));
 }).RequireAuthorization();
 
 app.MapGet("/api/webhooks", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
@@ -837,7 +839,7 @@ app.MapGet("/api/webhooks", async (ClaimsPrincipal user, DevSupDbContext db, Can
             .Where(w => w.UserId == ownerId)
             .OrderBy(w => w.CreatedAt)
             .ToListAsync(ct))
-        .Select(w => new WebhookResponse(w.Id, w.Url, ResolveEvents(w.EventMask), w.Active, w.CreatedAt))
+        .Select(w => new WebhookResponse(w.Id, w.Url, ResolveEvents(w.EventMask), w.Active, w.CreatedAt, w.Name, w.Channel))
         .ToList();
 
     return Results.Ok(webhooks);

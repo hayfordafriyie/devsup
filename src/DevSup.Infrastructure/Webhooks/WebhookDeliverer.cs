@@ -12,30 +12,32 @@ namespace DevSup.Infrastructure.Webhooks;
 /// </summary>
 public interface IWebhookDeliverer
 {
-    Task DeliverAsync(string url, string secret, string payload, WebhookEvent webhookEvent, CancellationToken ct);
+    Task DeliverAsync(string url, string secret, string payload, WebhookEvent webhookEvent, WebhookChannel channel, CancellationToken ct);
 }
 
 public sealed class HttpWebhookDeliverer(
     IHttpClientFactory httpClientFactory,
     ILogger<HttpWebhookDeliverer> logger) : IWebhookDeliverer
 {
-    public async Task DeliverAsync(string url, string secret, string payload, WebhookEvent webhookEvent, CancellationToken ct)
+    public async Task DeliverAsync(string url, string secret, string payload, WebhookEvent webhookEvent, WebhookChannel channel, CancellationToken ct)
     {
+        var body = WebhookPayloadFormatter.Format(channel, payload);
+
         using var client = httpClientFactory.CreateClient("webhooks");
         client.Timeout = TimeSpan.FromSeconds(10);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
-            Content = new StringContent(payload, Encoding.UTF8)
+            Content = new StringContent(body, Encoding.UTF8)
         };
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         request.Headers.TryAddWithoutValidation(WebhookQueue.EventHeader, CamelName(webhookEvent));
-        request.Headers.TryAddWithoutValidation(WebhookQueue.SignatureHeader, "sha256=" + ComputeSignature(secret, payload));
+        request.Headers.TryAddWithoutValidation(WebhookQueue.SignatureHeader, "sha256=" + ComputeSignature(secret, body));
 
         using var response = await client.SendAsync(request, ct);
         if (response.IsSuccessStatusCode)
         {
-            logger.LogDebug("Delivered webhook event {Event} to {Url}", webhookEvent, url);
+            logger.LogDebug("Delivered webhook event {Event} to {Url} via {Channel}", webhookEvent, url, channel);
         }
 
         response.EnsureSuccessStatusCode();

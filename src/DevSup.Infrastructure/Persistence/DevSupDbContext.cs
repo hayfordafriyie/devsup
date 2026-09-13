@@ -107,6 +107,8 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.ToTable("webhook_endpoints");
             entity.HasKey(w => w.Id);
             entity.Property(w => w.Url).HasMaxLength(2048).IsRequired();
+            entity.Property(w => w.Name).HasMaxLength(128);
+            entity.Property(w => w.Channel).HasConversion<int>();
             entity.Property(w => w.EncryptedSecret).HasMaxLength(1024).IsRequired();
             entity.HasIndex(w => new { w.UserId, w.Url }).IsUnique();
         });

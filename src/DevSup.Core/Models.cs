@@ -129,6 +129,12 @@ public sealed record WebhookEndpoint
     /// <summary>HTTPS endpoint receiving POSTed JSON events.</summary>
     public required string Url { get; init; }
 
+    /// <summary>Human-friendly label, e.g. "#incidents on Slack".</summary>
+    public string? Name { get; init; }
+
+    /// <summary>Destination type; Slack/Teams payloads are formatted at delivery time.</summary>
+    public WebhookChannel Channel { get; init; } = WebhookChannel.Http;
+
     /// <summary>Signing secret used to compute the X-DevSup-Signature header, encrypted at rest.</summary>
     public required string EncryptedSecret { get; init; }
 

@@ -36,7 +36,7 @@ public sealed class HttpWebhookDelivererTests
         const string secret = "s3cret";
         const string payload = """{"event":"failureDetected","ticket":{"status":"new"}}""";
 
-        await deliverer.DeliverAsync("https://hooks.example.com/devsup", secret, payload, WebhookEvent.FailureDetected, CancellationToken.None);
+        await deliverer.DeliverAsync("https://hooks.example.com/devsup", secret, payload, WebhookEvent.FailureDetected, WebhookChannel.Http, CancellationToken.None);
 
         Assert.NotNull(captured);
         Assert.Equal("https://hooks.example.com/devsup", captured!.RequestUri!.AbsoluteUri);
@@ -57,7 +57,7 @@ public sealed class HttpWebhookDelivererTests
             NullLogger<HttpWebhookDeliverer>.Instance);
 
         await Assert.ThrowsAsync<HttpRequestException>(() =>
-            deliverer.DeliverAsync("https://hooks.example.com/devsup", "s3cret", "{}", WebhookEvent.NotCodeError, CancellationToken.None));
+            deliverer.DeliverAsync("https://hooks.example.com/devsup", "s3cret", "{}", WebhookEvent.NotCodeError, WebhookChannel.Http, CancellationToken.None));
     }
 
     [Fact]

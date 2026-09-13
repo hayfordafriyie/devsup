@@ -49,14 +49,14 @@ public sealed class FakeWebhookDeliverer : IWebhookDeliverer
 
     public bool ThrowOnDeliver { get; set; }
 
-    public Task DeliverAsync(string url, string secret, string payload, WebhookEvent webhookEvent, CancellationToken ct)
+    public Task DeliverAsync(string url, string secret, string payload, WebhookEvent webhookEvent, WebhookChannel channel, CancellationToken ct)
     {
         if (ThrowOnDeliver)
         {
             throw new InvalidOperationException("webhook target unavailable (fake)");
         }
 
-        Delivered.Add((url, secret, payload, webhookEvent));
+        Delivered.Add((url, secret, WebhookPayloadFormatter.Format(channel, payload), webhookEvent));
         return Task.CompletedTask;
     }
 }
