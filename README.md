@@ -5,11 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.26** — the **per-repository retention** release.
-> `PUT /api/repositories/{id}/retention` sets a per-repo history window — inherit the
-> global default, keep forever, or a custom number of days — with the retention worker
-> honouring each policy. Owner-only, audited, and exposed as a **Retention** control in
-> the dashboard. 232 tests passing.
+> Project status: **v0.27** — the **repository-scoped webhooks** release. Webhook
+> endpoints accept an optional `repositoryIds` list on create; scoped endpoints only
+> receive events for their repositories (unscoped still receive all). Scope is echoed on
+> `GET /api/webhooks`, validated against your own repositories, and editable via a
+> multi-select in the dashboard. 239 tests passing.
 
 ---
 
@@ -313,6 +313,16 @@ a friendly `name` (e.g. `#incidents on Slack`) and it shows up formatted everywh
 Events are opt-in per endpoint (`events` list on create, all by default). Failed
 deliveries are retried from an outbox (`Webhooks:` interval / `MaxAttempts`, default
 8 tries); deleted or deactivated endpoints are drained silently.
+
+#### Repository-scoped subscriptions (v0.27)
+
+By default an endpoint hears about **every** repository you own. Pass a
+`repositoryIds` list on create to scope it: the endpoint then only receives events
+whose repository is in the list (a scoped endpoint receives nothing for repo-less
+events). Scope is stored per endpoint, echoed on `GET /api/webhooks`, and only
+repositories you own may be listed (`400` otherwise). The dashboard's webhook form has
+a multi-select for this — leave it empty for all repositories — and each endpoint's row
+shows its scope (`all repositories` / `N repo(s)`).
 
 ### External app-URL health checks
 
@@ -636,7 +646,7 @@ devsup/
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
 - `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA, last agent error, optional PR/MR URL
 - `EmailMessages` — outbox (to, subject, html body, sent, created at)
-- `WebhookEndpoints` — user, destination URL, channel (`http`/`slack`/`teams`), event mask, **encrypted signing secret**, active
+- `WebhookEndpoints` — user, destination URL, channel (`http`/`slack`/`teams`), event mask, **encrypted signing secret**, repository scope (`RepositoryIds`), active
 - `WebhookDeliveries` — outbox (webhook, event, payload, attempts, last error, sent)
 - `AuditEntries` — write-audit trail (actor, action, entity, before/after, IP, timestamp)
 - `NotificationPreferences` — per-user, per-repository email delivery preferences (`EmailEnabled` master switch + per-event `MutedEmailEvents` bitmask)
@@ -645,7 +655,7 @@ Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` 
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`, `AddRepositoryRetention`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`, `AddRepositoryRetention`, `AddWebhookRepositoryScope`).
 
 ### The repair agent (v0.4)
 
@@ -750,7 +760,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `POST` | `/api/tickets/{ticketId}/reopen` | Bearer | Reopen a closed ticket into the repair queue (audited) |
 | `GET` | `/api/failures` | Bearer | Paginated failure history joined to tickets (`repositoryId`, `from`, `to`, `status`, `page`, `pageSize`) |
 | `GET` | `/api/failures/export` | Bearer | CSV export of the same filtered failure history |
-| `POST` | `/api/webhooks` | Bearer | Register a webhook endpoint (returns the signing secret once; `channel` = http/slack/teams) |
+| `POST` | `/api/webhooks` | Bearer | Register a webhook endpoint (returns the signing secret once; `channel` = http/slack/teams; optional `repositoryIds` scope) |
 | `GET` | `/api/webhooks` | Bearer | List webhook endpoints |
 | `DELETE` | `/api/webhooks/{id}` | Bearer | Remove a webhook endpoint |
 | `POST` | `/api/webhooks/{id}/rotate` | Bearer | Replace the signing secret and receive the new value once |
@@ -823,6 +833,7 @@ push/PR to `master`.
 - **v0.24** *(done)* — digest cadence: per-user `digestFrequency` (daily/weekly) with `LastDigestSentAt` tracking; the worker skips users whose interval hasn't elapsed and widens the window to the cadence (weekly = 7 days); dashboard Account panel cadence selector; migration `AddUserDigestFrequency`
 - **v0.25** *(done)* — admin fleet health: `GET /api/admin/repositories` cross-tenant view (owner, health, pause/archive, open tickets, failures; health/owner/paused/archived filters) and a health breakdown on `GET /api/admin/overview`; dashboard admin console Fleet health panel
 - **v0.26** *(done)* — per-repository retention overrides: `PUT /api/repositories/{id}/retention` (inherit / keep-forever / custom days), the retention worker honours each policy for that repo's failures + tickets, audited `repository.retention`, dashboard Retention control; migration `AddRepositoryRetention`
+- **v0.27** *(done)* — repository-scoped webhooks: optional `repositoryIds` scope on `POST /api/webhooks`; scoped endpoints receive only their repositories' events (unscoped = all), scope echoed on list, validated to owned repos, dashboard multi-select; migration `AddWebhookRepositoryScope`
 
 ---
 
