@@ -5,12 +5,14 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.4** — on top of v0.3 (SMTP outbox delivery, GitHub OAuth with
-> encrypted tokens, not-a-code-error emails) and v0.2 (SQLite persistence, JWT accounts,
-> connected repositories, ingest triage, tickets), the **repair agent** now drives the
-> full investigate → patch → commit → push loop: it clones the connected repo with the
-> owner's token, applies a safe template repair, pushes the fix, records the commit SHA,
-> and emails at every step. 41 tests passing.
+> Project status: **v0.5** — on top of v0.4 (the repair agent drives
+> investigate → patch → commit → push) and v0.3/v0.2 (SMTP outbox, GitHub OAuth,
+> SQLite, JWT accounts, tickets), you can now **bring your own AI model keys**
+> (OpenAI, Anthropic Claude, Google Gemini, DeepSeek, or a local Ollama endpoint)
+> through a key-management API, GitLab is supported for both OAuth connections and
+> agent pushes, and the agent hands every ticket to the model first, falling back to
+> `.devsup/repairs.json` templates only when the model has nothing safe to offer.
+> 55 tests passing.
 
 ---
 
@@ -33,8 +35,8 @@ instead of digging through logs.
 
 ## 1. What it does
 
-- **Users create an account** and connect their git repositories (GitHub, and later
-  GitLab) via OAuth.
+- **Users create an account** and connect their git repositories (GitHub or GitLab)
+  via OAuth.
 - For each repo the user picks a **branch**, and optionally provides the **URL of the
   app/backend** the source is linked to.
 - The user instruments their app with the **DevSup middleware** (a NuGet package).
@@ -110,9 +112,24 @@ The classifier signals `SkippedNotCodeError` for those ticket statuses so the us
 
 Users supply their own model API keys — **Claude (Anthropic), Gemini (Google),
 DeepSeek, OpenAI, or a local Ollama endpoint**. Keys are bound per
-user/provider/model, encrypted at rest, and never stored in plain text or surfaced to
-the UI. The agent resolves the key per repair ticket and uses that provider for
-investigation, patch generation, and commit-message drafting.
+user/provider/model, encrypted at rest under `Security:DataProtectionKey`, and never
+stored in plain text or surfaced to the UI — listing shows only a `••••abcd`-style
+mask. The agent resolves the repo owner's key binding, decrypts it in memory only, and
+favours the model for investigation and patch generation.
+
+The repair loop tries **model first**: if the model returns a patch suggestion, the
+same verified-verbatim gate as templates applies (exact fragment → replacement, no
+trusted-in-broken-diffs). When the model returns nothing usable, DevSup falls back to
+`.devsup/repairs.json` template repairs, and only then escalates to a human.
+
+- `GET /api/ai-keys` — list your key bindings (masked, never plaintext).
+- `POST /api/ai-keys` — add or update a binding (`provider`, `model`, `key`).
+- `DELETE /api/ai-keys?provider=&model=` — remove a binding.
+
+Provider wire shapes (OpenAI-compatible chat for OpenAI/DeepSeek/Ollama, Anthropic
+Messages, Gemini `generateContent`) and default endpoints are built in; the
+`AiModels:<Provider>:BaseUrl/Model/TimeoutSeconds` config section overrides them — the
+default `Ollama` entry already points at `http://localhost:11434`.
 
 ## 7. Email notifications
 
@@ -156,14 +173,15 @@ devsup/
 
 - `Users` — account, email, display name, **PBKDF2 password hash**, created timestamp
 - `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL
-- `AiModelKeyBindings` — user, provider, model, encrypted key
+- `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
 - `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA, last agent error
 - `EmailMessages` — outbox (to, subject, html body, sent, created at)
 
 Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
 schema shipped as EF Core migrations (`InitialCreate`,
-`AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`).
+`AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
+`AddAiModelKeyMaskUpdatedAtUniqueIndex`).
 
 ### The repair agent (v0.4)
 
@@ -173,12 +191,13 @@ A background worker (`DevSup.Agent/Repair/RepairWorker`) sweeps on an interval (
 
 1. **Adopt** — only tickets still `New` are picked up (idempotent; one claim per ticket).
 2. **Investigate** — resolves the owner's linked provider token (decrypted in memory
-   only), clones the connected repo into a temp workspace, and runs `IRepairProvider`.
-3. **Patch** — the default `HeuristicRepairProvider` reads `.devsup/repairs.json` from
-   the checked-out repo and applies a single, *verified-verbatim* string replacement in
-   the targeted file (path-traversal guarded). It refuses ambiguous, missing, or
-   unparsable repairs rather than risk a broken diff. This is the seam where a real AI
-   provider slots in (v0.5).
+   only), clones the connected repo into a temp workspace, and runs the repair chain.
+3. **Patch (AI first, templates second)** — if the owner has bound a model key, the
+   provider for that binding is asked for a surgical patch; otherwise, or when the model
+   returns nothing usable, the default `HeuristicRepairProvider` reads
+   `.devsup/repairs.json` from the checked-out repo and applies a single,
+   *verified-verbatim* string replacement in the targeted file (path-traversal guarded).
+   It refuses ambiguous, missing, or unparsable repairs rather than risk a broken diff.
 4. **Commit & push** — the change is committed and pushed to the repo's default branch
    under the token the user linked during OAuth (`https://x-access-token:<token>` on the
    clone URL, never persisted or logged). The short checkout is cleaned up afterwards.
@@ -188,7 +207,8 @@ A background worker (`DevSup.Agent/Repair/RepairWorker`) sweeps on an interval (
 
 Security: only https clone URLs are eligible, the resolved file must stay inside the
 workspace, and no failure is auto-retried forever — anything unexpected lands in
-`NeedsHumanReview` with a `LastError`.
+`NeedsHumanReview` with a `LastError`. GitLab clones use the `oauth2:` credential user
+(GitHub uses `x-access-token:`), and the token is never written to disk or logs.
 
 ### Emails (outbox + SMTP)
 
@@ -206,8 +226,8 @@ explanatory "not a code error — no patch scheduled" email instead of a repair 
   creates or links the account, stores the access token encrypted at rest (AES-256-GCM,
   key from `Security:DataProtectionKey`), and returns a JWT.
 
-OAuth only works when `GitHub:ClientId` and `GitHub:ClientSecret` are configured;
-`BuildAuthorizeUrl`/token/user URLs are overridable per environment.
+OAuth only works when the provider's `ClientId` and `ClientSecret` are configured
+(`GitHub:` / `GitLab:`); authorize/token/user URLs are overridable per environment.
 
 ## 11. Local development
 
@@ -230,10 +250,15 @@ automatically at startup (a `devsup.db` file is created next to the repo).
 | `POST` | `/api/users/login` | — | Exchange credentials for a JWT |
 | `GET` | `/api/auth/github/login` | — | Start GitHub OAuth (redirects to GitHub) |
 | `GET` | `/api/auth/github/callback` | — | GitHub OAuth callback → links account, returns JWT |
+| `GET` | `/api/auth/gitlab/login` | — | Start GitLab OAuth (redirects to GitLab) |
+| `GET` | `/api/auth/gitlab/callback` | — | GitLab OAuth callback → links account, returns JWT |
 | `GET` | `/api/repositories` | Bearer | List connected repositories |
 | `POST` | `/api/repositories` | Bearer | Connect a repository (provider, clone URL, branch) |
 | `POST` | `/api/ingest` | Bearer | Report a failure; triaged into a repair ticket |
 | `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
+| `GET` | `/api/ai-keys` | Bearer | List your AI key bindings (masked) |
+| `POST` | `/api/ai-keys` | Bearer | Add or update an AI key binding |
+| `DELETE` | `/api/ai-keys` | Bearer | Delete an AI key binding |
 
 Secrets at rest (GitHub access tokens) are encrypted with AES-256-GCM under
 `Security:DataProtectionKey`. JWT settings live under `Jwt`. Agent cadence and the commit
@@ -260,7 +285,7 @@ push/PR to `master`.
 - **v0.2** *(done)* — SQLite persistence + migrations, JWT accounts, connect repo, ingest endpoint, classifier triage, tickets, email outbox
 - **v0.3** *(done)* — SMTP outbox delivery with retries, GitHub OAuth + encrypted token storage, not-a-code-error emails
 - **v0.4** *(done)* — agent repair loop: investigate → template patch → commit → push, ticket status updates, "fixed"/"needs review" emails
-- **v0.5** — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, key management API
+- **v0.5** *(done)* — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, key management API
 - **v0.6** — consumer versioning of the middleware, payload sanitization hardening, PR-based (opt-in) flow
 - **v0.7** — multi-repo, dashboards, Slack/webhook notifications, external app-URL checks
 
