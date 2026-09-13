@@ -5,14 +5,13 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.9** — on top of v0.8 (event replay, Slack/Teams channels,
-> PostgreSQL), the platform gained **multi-tenant administration**: a platform-admin
-> role bootstrapped from `Admin:Emails` at startup, admin-only `User`s/overview
-> endpoints, and the ability to **suspend (deactivate) any account**; the dashboard's
-> webhook form now captures the **name and channel** (HTTP / Slack / Teams) in one
-> routing step; and a configurable **event retention worker** purges expired failure
-> events, tickets, webhook deliveries, and sent emails older than a rolling window.
-> 118 tests passing.
+> Project status: **v0.10** — on top of v0.9 (platform admin, routing UI, event
+> retention), the platform added visibility-and-compliance tooling: a **write-audit
+> trail** records logins plus every report/config-write on repos, webhooks, AI keys and
+> admin account changes (`GET /api/admin/audit`, filterable); a **paginated failure
+> history** API with date/repository/status filters and a **CSV export** lets you review
+> the data the retention worker prunes; and webhook **signing-secret rotation**
+> re-keys an endpoint without recreating it. 127 tests passing.
 
 ---
 
@@ -28,11 +27,12 @@ instead of digging through logs.
 8. [Webhooks, channels & health checks](#8-webhooks-channels--health-checks)
 9. [Event replay & re-dispatch](#9-event-replay--re-dispatch)
 10. [Platform admin & data retention](#10-platform-admin--data-retention)
-11. [Security & sanitization](#11-security--sanitization)
-12. [Repository layout](#12-repository-layout)
-13. [Data model](#13-data-model)
-14. [Local development](#14-local-development)
-15. [Roadmap](#15-roadmap)
+11. [Audit & failure history](#11-audit--failure-history)
+12. [Security & sanitization](#12-security--sanitization)
+13. [Repository layout](#13-repository-layout)
+14. [Data model](#14-data-model)
+15. [Local development](#15-local-development)
+16. [Roadmap](#16-roadmap)
 
 ---
 
@@ -237,7 +237,38 @@ Historical failure data grows forever unless pruned. A background worker
 
 Setting `Retention:WindowDays = 0` disables purging entirely.
 
-## 11. Security & sanitization
+## 11. Audit & failure history
+
+### Write-audit trail
+
+Every sensitive action is persisted to an `AuditEntry` (actor email, action, entity,
+before/after summary, timestamp) so platform admins can answer "who did what, when":
+
+- `user.login` — every successful account sign-in
+- `repository.connect`, `webhook.create`, `webhook.delete`, `webhook.rotate`,
+  `aiKey.create`, `aiKey.update`, `aiKey.delete` — configuration writes
+- `user.deactivate`, `user.activate` — admin account changes
+
+`GET /api/admin/audit` (admin-only) lists the latest 200 entries, filterable by
+`actor`, `action`, and `entityType`. Failure ingestion is deliberately **not** audited
+to avoid noise.
+
+### Failure history & CSV export
+
+`GET /api/failures` returns a paginated history of your failure events joined to their
+repair tickets, newest first. Filters: `repositoryId`, `from` / `to` (UTC timestamps),
+`status` (ticket status), `page`, `pageSize` (max 100). `GET /api/failures/export`
+streams the same filtered view as a UTF-8 CSV (RFC-4180 escaping) with one row per
+failure — ideal for reviewing or archiving before retention purges it.
+
+### Webhook secret rotation
+
+Suspect a leaked signing secret? `POST /api/webhooks/{id}/rotate` replaces the stored
+secret and returns the new value — once, exactly like creation — without touching the
+endpoint's URL, channel, or event subscriptions. All subsequent deliveries are signed
+with the new secret.
+
+## 12. Security & sanitization
 
 - **Payload scrubbing** at capture time: `Authorization`, `X-Api-Key`, `Cookie`,
   `Set-Cookie` headers and secrets stripped before a failure event is stored.
@@ -249,7 +280,7 @@ Setting `Retention:WindowDays = 0` disables purging entirely.
   PatchProposed → FixPushed → FixVerified → Closed* so every auto-mutation is visible
   and reversible.
 
-## 12. Repository layout
+## 13. Repository layout
 
 ```
 devsup/
@@ -264,7 +295,7 @@ devsup/
 └─ README.md
 ```
 
-## 13. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
+## 14. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
 
 - `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, created timestamp
 - `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`)
@@ -274,12 +305,13 @@ devsup/
 - `EmailMessages` — outbox (to, subject, html body, sent, created at)
 - `WebhookEndpoints` — user, destination URL, channel (`http`/`slack`/`teams`), event mask, **encrypted signing secret**, active
 - `WebhookDeliveries` — outbox (webhook, event, payload, attempts, last error, sent)
+- `AuditEntries` — write-audit trail (actor, action, entity, before/after, IP, timestamp)
 
 Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`).
 
 ### The repair agent (v0.4)
 
@@ -327,7 +359,7 @@ explanatory "not a code error — no patch scheduled" email instead of a repair 
 OAuth only works when the provider's `ClientId` and `ClientSecret` are configured
 (`GitHub:` / `GitLab:`); authorize/token/user URLs are overridable per environment.
 
-## 14. Local development
+## 15. Local development
 
 ```bash
 dotnet restore
@@ -363,14 +395,18 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/tickets?repositoryId=` | Bearer | Filter tickets to one repository |
 | `POST` | `/api/failures/{failureId}/replay` | Bearer | Re-send email + webhook notifications for a past failure |
 | `POST` | `/api/tickets/{ticketId}/redispatch` | Bearer | Return a new/needs-review ticket to the repair queue |
+| `GET` | `/api/failures` | Bearer | Paginated failure history joined to tickets (`repositoryId`, `from`, `to`, `status`, `page`, `pageSize`) |
+| `GET` | `/api/failures/export` | Bearer | CSV export of the same filtered failure history |
 | `POST` | `/api/webhooks` | Bearer | Register a webhook endpoint (returns the signing secret once; `channel` = http/slack/teams) |
 | `GET` | `/api/webhooks` | Bearer | List webhook endpoints |
 | `DELETE` | `/api/webhooks/{id}` | Bearer | Remove a webhook endpoint |
+| `POST` | `/api/webhooks/{id}/rotate` | Bearer | Replace the signing secret and receive the new value once |
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
 | `GET` | `/api/admin/overview` | Bearer + admin | Platform-wide totals (users, repos, failures, tickets, webhooks) |
 | `GET` | `/api/admin/users` | Bearer + admin | List every user with admin/active flags and per-user counts |
 | `POST` | `/api/admin/users/{id}/deactivate` | Bearer + admin | Suspend an account (blocks future sign-in) |
 | `POST` | `/api/admin/users/{id}/activate` | Bearer + admin | Restore a suspended account |
+| `GET` | `/api/admin/audit` | Bearer + admin | Audit trail, filterable by `actor`, `action`, `entityType` |
 
 Secrets at rest (GitHub access tokens) are encrypted with AES-256-GCM under
 `Security:DataProtectionKey`. JWT settings live under `Jwt`. Agent cadence and the commit
@@ -393,7 +429,7 @@ docker run --rm -p 8080:8080 devsup-api
 `.github/workflows/ci.yml` runs `restore` → `build` → `test` in Release on every
 push/PR to `master`.
 
-## 15. Roadmap
+## 16. Roadmap
 
 - **v0.1** — solution scaffold, domain model, failure classifier + tests
 - **v0.2** *(done)* — SQLite persistence + migrations, JWT accounts, connect repo, ingest endpoint, classifier triage, tickets, email outbox
@@ -404,6 +440,7 @@ push/PR to `master`.
 - **v0.7** *(done)* — webhook notifications (HMAC-signed), external app-URL health checks, cross-repository `/api/overview`, dashboard UI at `/dashboard/`
 - **v0.8** *(done)* — event replay + ticket re-dispatch, Slack/Teams notification channels, configurable PostgreSQL provider
 - **v0.9** *(done)* — platform admin role + account suspension, dashboard webhook channel/name routing, event retention worker
+- **v0.10** *(done)* — write-audit trail, paginated failure history with date/repo/status filters and CSV export, webhook secret rotation
 
 ---
 
