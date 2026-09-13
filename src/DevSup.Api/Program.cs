@@ -852,6 +852,108 @@ app.MapGet("/api/overview", async (ClaimsPrincipal user, DevSupDbContext db, Can
         Tickets: counts));
 }).RequireAuthorization();
 
+app.MapGet("/api/failures", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct,
+    Guid? repositoryId = null, DateTimeOffset? from = null, DateTimeOffset? to = null,
+    string? status = null, int page = 1, int pageSize = 25) =>
+{
+    var ownerId = user.GetUserId();
+    page = Math.Max(1, page);
+    pageSize = Math.Clamp(pageSize, 1, 100);
+
+    var query =
+        from f in db.FailureEvents.AsNoTracking()
+        join t in db.RepairTickets.AsNoTracking() on f.Id equals t.FailureEventId into tj
+        from t in tj.DefaultIfEmpty()
+        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId && r.OwnerUserId == ownerId)
+        select new { Failure = f, Ticket = t };
+    if (repositoryId is not null)
+    {
+        query = query.Where(x => x.Failure.RepositoryId == repositoryId);
+    }
+    if (from is not null)
+    {
+        query = query.Where(x => x.Failure.OccurredAt >= from);
+    }
+    if (to is not null)
+    {
+        query = query.Where(x => x.Failure.OccurredAt < to);
+    }
+    if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<TicketStatus>(status, ignoreCase: true, out var parsedStatus))
+    {
+        query = query.Where(x => x.Ticket != null && x.Ticket.Status == parsedStatus);
+    }
+
+    var total = await query.CountAsync(ct);
+    var rows = await query
+        .OrderByDescending(x => x.Failure.OccurredAt)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .Select(x => new FailureHistoryRow(
+            x.Failure.Id,
+            x.Failure.RepositoryId,
+            x.Failure.StatusCode,
+            x.Failure.Method,
+            x.Failure.Path,
+            x.Failure.ExceptionMessage,
+            x.Failure.OccurredAt,
+            x.Ticket != null ? x.Ticket.Id : null,
+            x.Ticket != null ? x.Ticket.Status.ToString() : null,
+            x.Ticket != null ? x.Ticket.Category.ToString() : null,
+            x.Ticket != null ? x.Ticket.Kind.ToString() : null,
+            x.Ticket != null ? x.Ticket.PatchSummary : null,
+            x.Ticket != null ? x.Ticket.CommitSha : null))
+        .ToListAsync(ct);
+
+    return Results.Ok(new FailureHistoryPage(rows, page, pageSize, total));
+}).RequireAuthorization();
+
+app.MapGet("/api/failures/export", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct,
+    Guid? repositoryId = null, DateTimeOffset? from = null, DateTimeOffset? to = null) =>
+{
+    var ownerId = user.GetUserId();
+
+    var query =
+        from f in db.FailureEvents.AsNoTracking()
+        join t in db.RepairTickets.AsNoTracking() on f.Id equals t.FailureEventId into tj
+        from t in tj.DefaultIfEmpty()
+        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId && r.OwnerUserId == ownerId)
+        select new { Failure = f, Ticket = t };
+    if (repositoryId is not null)
+    {
+        query = query.Where(x => x.Failure.RepositoryId == repositoryId);
+    }
+    if (from is not null)
+    {
+        query = query.Where(x => x.Failure.OccurredAt >= from);
+    }
+    if (to is not null)
+    {
+        query = query.Where(x => x.Failure.OccurredAt < to);
+    }
+
+    var rows = await query.OrderBy(x => x.Failure.OccurredAt).ToListAsync(ct);
+
+    var csv = new StringBuilder();
+    csv.AppendLine("occurredAtUtc,repositoryId,method,path,statusCode,category,kind,ticketStatus,exceptionMessage,patchSummary,commitSha");
+    foreach (var row in rows)
+    {
+        csv.Append(CsvEscape(row.Failure.OccurredAt.ToString("O"))).Append(',');
+        csv.Append(CsvEscape(row.Failure.RepositoryId.ToString())).Append(',');
+        csv.Append(CsvEscape(row.Failure.Method)).Append(',');
+        csv.Append(CsvEscape(row.Failure.Path)).Append(',');
+        csv.Append(row.Failure.StatusCode).Append(',');
+        csv.Append(CsvEscape(row.Ticket?.Category.ToString())).Append(',');
+        csv.Append(CsvEscape(row.Ticket?.Kind.ToString())).Append(',');
+        csv.Append(CsvEscape(row.Ticket?.Status.ToString())).Append(',');
+        csv.Append(CsvEscape(row.Failure.ExceptionMessage)).Append(',');
+        csv.Append(CsvEscape(row.Ticket?.PatchSummary)).Append(',');
+        csv.AppendLine(CsvEscape(row.Ticket?.CommitSha));
+    }
+
+    var bytes = Encoding.UTF8.GetBytes(csv.ToString());
+    return Results.File(bytes, "text/csv", $"devsup-failures-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+}).RequireAuthorization();
+
 app.MapGet("/api/admin/overview", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
     if (!await IsAdminAsync(user, db, ct))
@@ -1048,6 +1150,21 @@ app.Run();
 
 static async Task<bool> IsAdminAsync(ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
     await db.Users.AsNoTracking().AnyAsync(u => u.Id == user.GetUserId() && u.IsAdmin, ct);
+
+static string CsvEscape(string? value)
+{
+    if (string.IsNullOrEmpty(value))
+    {
+        return string.Empty;
+    }
+
+    if (value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
+    {
+        return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+    }
+
+    return value;
+}
 
 static bool IsValidEmail(string? email)
 {

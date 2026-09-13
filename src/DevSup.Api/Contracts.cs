@@ -115,3 +115,24 @@ public sealed record AuditEntryResponse(
     string? After,
     string? IpAddress,
     DateTimeOffset Timestamp);
+
+public sealed record FailureHistoryRow(
+    Guid Id,
+    Guid RepositoryId,
+    int StatusCode,
+    string Method,
+    string Path,
+    string? ExceptionMessage,
+    DateTimeOffset OccurredAt,
+    Guid? TicketId,
+    string? TicketStatus,
+    string? Category,
+    string? Kind,
+    string? PatchSummary,
+    string? CommitSha);
+
+public sealed record FailureHistoryPage(
+    IReadOnlyList<FailureHistoryRow> Items,
+    int Page,
+    int PageSize,
+    int Total);
