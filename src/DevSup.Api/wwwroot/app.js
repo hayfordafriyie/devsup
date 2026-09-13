@@ -382,7 +382,11 @@
             container.hidden = false;
             return;
         }
-        container.innerHTML = '<table class="delivery-log-table"><thead><tr>' +
+        var anyFailed = page.items.some(function (d) { return !d.sent; });
+        container.innerHTML = (anyFailed
+                ? '<button data-retry-all="' + webhookId + '">Retry all failed</button>'
+                : "") +
+            '<table class="delivery-log-table"><thead><tr>' +
             "<th>Event</th><th>Status</th><th>Attempts</th><th>Created</th><th>Last error</th><th></th>" +
             "</tr></thead><tbody>" + page.items.map(function (d) {
                 var status = d.sent
@@ -409,6 +413,15 @@
         if (!container.hidden) {
             container.hidden = true;
             container.innerHTML = "";
+            return;
+        }
+        var page = await api("/api/webhooks/" + webhookId + "/deliveries?pageSize=20");
+        renderDeliveryLog(webhookId, page);
+    }
+
+    async function refreshDeliveryLog(webhookId) {
+        var container = document.querySelector('[data-log-target="' + webhookId + '"]');
+        if (!container || container.hidden) {
             return;
         }
         var page = await api("/api/webhooks/" + webhookId + "/deliveries?pageSize=20");
@@ -979,6 +992,18 @@
             toggleDeliveryLog(logId).catch(function (e) { showError(e.message); });
             return;
         }
+        button = event.target.closest("[data-retry-all]");
+        if (button) {
+            var retryAllId = button.getAttribute("data-retry-all");
+            fetch("/api/webhooks/" + retryAllId + "/deliveries/retry-all", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to retry deliveries");
+                return refreshDeliveryLog(retryAllId);
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
         button = event.target.closest("[data-retry-delivery]");
         if (button) {
             var deliveryId = button.getAttribute("data-retry-delivery");
@@ -988,7 +1013,7 @@
                 headers: { Authorization: "Bearer " + token }
             }).then(function (response) {
                 if (!response.ok) throw new Error("Failed to retry delivery");
-                return toggleDeliveryLog(webhookId);
+                return refreshDeliveryLog(webhookId);
             }).catch(function (e) { showError(e.message); });
             return;
         }

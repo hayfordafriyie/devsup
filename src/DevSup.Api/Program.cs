@@ -2145,6 +2145,35 @@ app.MapPost("/api/webhooks/{id:guid}/deliveries/{deliveryId:guid}/retry", async 
     return Results.Ok(new WebhookDeliveryResponse(delivery.Id, delivery.Event.ToString(), delivery.Sent, delivery.SentAt, delivery.Attempts, delivery.LastError, delivery.CreatedAt));
 }).RequireAuthorization();
 
+app.MapPost("/api/webhooks/{id:guid}/deliveries/retry-all", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var owns = await db.WebhookEndpoints.AsNoTracking()
+        .AnyAsync(w => w.Id == id && w.UserId == ownerId, ct);
+    if (!owns)
+    {
+        return Results.NotFound();
+    }
+
+    var failed = await db.WebhookDeliveries
+        .Where(d => d.WebhookId == id && d.UserId == ownerId && !d.Sent && (d.Attempts > 0 || d.LastError != null))
+        .ToListAsync(ct);
+
+    foreach (var delivery in failed)
+    {
+        db.Entry(delivery).Property(d => d.Attempts).CurrentValue = 0;
+        db.Entry(delivery).Property(d => d.LastError).CurrentValue = null;
+    }
+    await db.SaveChangesAsync(ct);
+
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == ownerId, ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "webhook.retryAll", "WebhookEndpoint", id.ToString(),
+        after: $"{failed.Count} failed deliveries re-queued", ct: ct);
+
+    return Results.Ok(new WebhookRetryAllResponse(id, failed.Count));
+}).RequireAuthorization();
+
 app.MapGet("/api/notification-preferences", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
     var ownerId = user.GetUserId();

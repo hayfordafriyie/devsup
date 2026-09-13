@@ -172,6 +172,9 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("webhook-repos", html2);
         Assert.Contains("renderWebhookRepoOptions", js);
         Assert.Contains("repositoryIds", js);
+        Assert.Contains("data-retry-all", js);
+        Assert.Contains("refreshDeliveryLog", js);
+        Assert.Contains("\"/deliveries/retry-all\"", js);
         Assert.Contains("repo-bulk-bar", html2);
         Assert.Contains("data-bulk-action", js);
         Assert.Contains("repo-select", js);

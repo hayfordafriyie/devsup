@@ -111,6 +111,39 @@ public sealed class WebhookDeliveryOpsTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Conflict, (await _client.SendAsync(again)).StatusCode);
     }
 
+    [Fact]
+    public async Task RetryAll_RequeuesFailedDeliveries_OwnershipScoped()
+    {
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "ops-retryall@test.dev", "Ops RetryAll");
+        var repositoryId = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/ops-retryall.git");
+        var webhook = await CreateWebhookAsync(token, "https://hooks.example.com/ops-retryall");
+
+        _factory.WebhookDeliverer.ThrowOnDeliver = true;
+        await Helpers.IngestAsync(_client, token, repositoryId, 500, "GET", "/api/one", exceptionMessage: "boom");
+        await Helpers.IngestAsync(_client, token, repositoryId, 500, "GET", "/api/two", exceptionMessage: "boom");
+        await ProcessPendingAsync();
+
+        var stranger = await Helpers.LoginAndGetTokenAsync(_client, "ops-retryall-x@test.dev", "Ops RetryAll X");
+        var foreign = new HttpRequestMessage(HttpMethod.Post, $"/api/webhooks/{webhook}/deliveries/retry-all");
+        foreign.Headers.Authorization = new AuthenticationHeaderValue("Bearer", stranger);
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.SendAsync(foreign)).StatusCode);
+
+        var retry = new HttpRequestMessage(HttpMethod.Post, $"/api/webhooks/{webhook}/deliveries/retry-all");
+        retry.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var response = await _client.SendAsync(retry);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<WebhookRetryAllResponse>(Helpers.ApiJson);
+        Assert.Equal(2, body!.Requeued);
+
+        _factory.WebhookDeliverer.ThrowOnDeliver = false;
+        await ProcessPendingAsync();
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        Assert.Equal(2, await db.WebhookDeliveries.AsNoTracking().CountAsync(d => d.Sent));
+        Assert.True(await db.AuditEntries.AsNoTracking().AnyAsync(a => a.Action == "webhook.retryAll"));
+    }
+
     private async Task<Guid> CreateWebhookAsync(string token, string url)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks")

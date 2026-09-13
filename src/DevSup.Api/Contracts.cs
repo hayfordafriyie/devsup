@@ -231,6 +231,8 @@ public sealed record WebhookDeliveryPage(
     int PageSize,
     int Total);
 
+public sealed record WebhookRetryAllResponse(Guid WebhookId, int Requeued);
+
 public sealed record NotificationPreferenceRequest(
     Guid RepositoryId,
     bool? EmailEnabled = null,
