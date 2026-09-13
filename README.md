@@ -5,13 +5,13 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.13** — the **delivery center & digests** release. Email delivery
-> is now visible and operable: `GET /api/emails` lists your message outbox (paginated,
-> filterable by sent state), `POST /api/emails/{id}/retry` re-queues a failed send, and a
-> background **digest worker** (`Digests:`) mails each active user a daily summary of
-> failures, open tickets and recently pushed fixes — silently skipped when there's
-> nothing to report. The dashboard's **Delivery center** shows the email outbox with
-> retry buttons and a one-click `Ping` per webhook endpoint. 143 tests passing.
+> Project status: **v0.14** — the **repair verification & delivery deep-dive** release.
+> Pushed fixes no longer need blind trust: a **verification worker** (`Verification:`)
+> re-probes the app URL after a fix lands and flips the ticket to `FixVerified` — with a
+> confirmation email — only when the app is actually healthy again. Digests become
+> personal: `PUT /api/account` toggles `digestEnabled` per user, and opted-out users get
+> skipped. The dashboard's webhooks gain per-endpoint **delivery logs** with one-click
+> retry. 150 tests passing.
 
 ---
 
@@ -150,8 +150,9 @@ providers later). Failed sends are retried, never silently dropped.
 ### Accounts & passwords (v0.12)
 
 Self-service is self-service with a paper trail. `GET /api/account` returns your profile
-(email, display name, admin/active flags, created at); `PUT /api/account` updates your
-display name; `POST /api/account/password` verifies the current password and sets a new
+(email, display name, admin/active flags, digest opt-out state, created at); `PUT
+/api/account` updates your display name and optionally toggles `digestEnabled`; `POST
+/api/account/password` verifies the current password and sets a new
 one (min 8 characters). Both write operations are persisted to the audit trail
 (`account.profileUpdate`, `account.passwordChange`).
 
@@ -167,10 +168,30 @@ The email outbox is no longer a black box:
   default 24) mails each **active** user one summary per interval: failures detected,
   open repair tickets (listed), and fixes pushed within the window. Users with repos but
   no activity get nothing — no empty digests. Digests ride the normal email outbox, so
-  they obey SMTP retries like everything else.
+  they obey SMTP retries like everything else. Digests are **global opt-out per user**:
+  `PUT /api/account` with `digestEnabled: false` silences the daily summary while
+  leaving transactional incident emails untouched.
 
 The dashboard **Delivery center** renders the email outbox with one-click retry, and a
 `Ping` button per webhook endpoint fires a signed `devsup.ping`.
+
+### Fix verification (v0.14)
+
+`FixVerified` status is earned, not assumed. The **verification worker** (`Verification:`
+config, default on) sweeps tickets that reach `FixPushed` and re-probes the repository's
+app URL once the fix has had time to deploy (`Verification:ProbeDelayMinutes` default 2).
+A healthy probe flips the ticket to `FixVerified`, stamps its updated time and mails the
+owner ("fix verified on `GET /api/orders`"). Unhealthy or unprobeable — no change, and a
+slow deploy keeps its window (`Verification:WindowMinutes` default 30) to come up. The
+dashboard casts `fixVerified` as **Fixed**.
+
+### Per-webhook delivery log (v0.14)
+
+Each webhook endpoint in the dashboard now has a **Log** button. It expands the delivery
+history (event, state, attempts, created time, last error) straight from
+`GET /api/webhooks/{id}/deliveries`, and failed deliveries carry a one-click **Retry**
+button pointed at `POST /api/webhooks/{id}/deliveries/{deliveryId}/retry` — the same
+audited operation available via the API.
 
 ### Notification preferences (v0.11)
 
@@ -488,7 +509,8 @@ identity used for pushes live under `Repairing:` (`IntervalSeconds`, `BatchSize`
 `GitUserName`, `GitUserEmail`). Retention sweep cadence lives under `Retention:`
 (`WindowDays`, `IntervalHours`, `BatchSize`) and admin bootstrapping under `Admin:Emails`.
 Daily email digests are configured under `Digests:` (`Enabled`, `IntervalHours`,
-`MaxOpenTickets`).
+`MaxOpenTickets`), and fix verification under `Verification:` (`Enabled`,
+`IntervalSeconds`, `ProbeDelayMinutes`, `WindowMinutes`, `ProbeTimeoutSeconds`).
 Override any of these via
 configuration/environment in a real deployment — the checked-in values are for
 development only.
@@ -520,6 +542,7 @@ push/PR to `master`.
 - **v0.11** *(done)* — operator console: admin console in the dashboard, per-endpoint webhook delivery log, per-repository notification preferences
 - **v0.12** *(done)* — self-service & delivery ops: account profile/password API (audited), webhook ping test + failed-delivery retry, notification-preferences panel in the dashboard
 - **v0.13** *(done)* — delivery center: email outbox log + retry API, scheduled daily digest emails, Delivery center panel with outbox retry and webhook ping in the dashboard
+- **v0.14** *(done)* — repair verification & delivery deep-dive: probe-confirmed `FixVerified` with confirmation emails, per-user digest opt-out, per-webhook delivery log with retry in the dashboard
 
 ---
 
