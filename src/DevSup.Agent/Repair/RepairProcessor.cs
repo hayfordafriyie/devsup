@@ -28,6 +28,7 @@ public sealed class RepairProcessor(
     DevSupDbContext db,
     IGitAdapter git,
     IRepairProvider provider,
+    AiRepairProvider aiRepair,
     IKeyProtector protector,
     RepairWorkerOptions options,
     ILogger<RepairProcessor> logger)
@@ -74,8 +75,24 @@ public sealed class RepairProcessor(
             string? workspace = null;
             try
             {
-                workspace = await git.CloneAsync(repository.CloneUrl, repository.DefaultBranch, token, ct);
-                var proposal = provider.Repair(failure, ticket.Kind, workspace);
+                workspace = await git.CloneAsync(repository.CloneUrl, repository.DefaultBranch, repository.Provider, token, ct);
+                var aiBinding = await db.AiModelKeyBindings.AsNoTracking()
+                    .FirstOrDefaultAsync(k => k.UserId == repository.OwnerUserId, ct);
+
+                RepairProposal proposal;
+                if (aiBinding is not null && TryDecryptBinding(aiBinding, out var apiKey))
+                {
+                    proposal = await aiRepair.GenerateAsync(failure, ticket.Kind, workspace, aiBinding, apiKey, ct);
+                    if (!proposal.HasPatch)
+                    {
+                        // Model had nothing safe to offer — fall back to template repairs.
+                        proposal = provider.Repair(failure, ticket.Kind, workspace);
+                    }
+                }
+                else
+                {
+                    proposal = provider.Repair(failure, ticket.Kind, workspace);
+                }
 
                 if (proposal.HasPatch && proposal.RelativeFilePath is not null)
                 {
@@ -148,6 +165,21 @@ public sealed class RepairProcessor(
         entry.Property(t => t.Analysis).CurrentValue = proposal.Analysis;
         entry.Property(t => t.LastError).CurrentValue = null;
         entry.Property(t => t.UpdatedAt).CurrentValue = DateTimeOffset.UtcNow;
+    }
+
+    private bool TryDecryptBinding(AiModelKeyBinding binding, out string apiKey)
+    {
+        try
+        {
+            apiKey = protector.Unprotect(binding.EncryptedApiKey);
+            return !string.IsNullOrWhiteSpace(apiKey);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not decrypt AI key binding {BindingId}", binding.Id);
+            apiKey = string.Empty;
+            return false;
+        }
     }
 
     /// <summary>Resolves the repo owner's linked provider token, unencrypting it in memory only.</summary>

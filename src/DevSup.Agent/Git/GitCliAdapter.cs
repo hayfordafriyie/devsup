@@ -1,5 +1,6 @@
 namespace DevSup.Agent.Git;
 
+using DevSup.Core;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
@@ -9,7 +10,7 @@ using Microsoft.Extensions.Logging;
 public interface IGitAdapter
 {
     /// <summary>Clones <paramref name="cloneUrl"/> into a fresh temp working directory and returns its path.</summary>
-    Task<string> CloneAsync(string cloneUrl, string branch, string accessToken, CancellationToken ct);
+    Task<string> CloneAsync(string cloneUrl, string branch, GitProvider provider, string accessToken, CancellationToken ct);
 
     /// <summary>
     /// Stages all changes, commits with <paramref name="message"/> and pushes to the
@@ -23,8 +24,9 @@ public interface IGitAdapter
 
 /// <summary>
 /// Real implementation backed by the git CLI. Only https:// clone URLs are
-/// supported; the user's access token is embedded as an x-access-token credential
-/// in the URL and is never written to the filesystem or logs.
+/// supported; the user's access token is embedded in the URL as a
+/// provider-specific credential user (GitHub: <c>x-access-token</c>, GitLab:
+/// <c>oauth2</c>) and is never written to the filesystem or logs.
 /// </summary>
 public sealed class GitCliAdapter : IGitAdapter
 {
@@ -32,7 +34,7 @@ public sealed class GitCliAdapter : IGitAdapter
 
     public GitCliAdapter(ILogger<GitCliAdapter> logger) => _logger = logger;
 
-    public async Task<string> CloneAsync(string cloneUrl, string branch, string accessToken, CancellationToken ct)
+    public async Task<string> CloneAsync(string cloneUrl, string branch, GitProvider provider, string accessToken, CancellationToken ct)
     {
         if (!Uri.TryCreate(cloneUrl, UriKind.Absolute, out var uri) ||
             (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
@@ -40,10 +42,11 @@ public sealed class GitCliAdapter : IGitAdapter
             throw new InvalidOperationException("Repair pushes require an https clone URL so the owner's token can be attached.");
         }
 
+        var credentialUser = provider == GitProvider.GitLab ? "oauth2" : "x-access-token";
         var target = Path.Combine(Path.GetTempPath(), "devsup-workspaces", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(target);
 
-        var authUrl = $"{uri.Scheme}://x-access-token:{accessToken}@{uri.Host}" +
+        var authUrl = $"{uri.Scheme}://{credentialUser}:{accessToken}@{uri.Host}" +
                       (uri.Port > 0 ? $":{uri.Port}" : "") + uri.AbsolutePath;
         var sanitizedUrl = $"{uri.Scheme}://***@{uri.Host}{uri.AbsolutePath}";
 
