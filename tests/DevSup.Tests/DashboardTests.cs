@@ -53,4 +53,26 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("w.channel", js);
         Assert.Contains("channel: channelSelect.value", js);
     }
+
+    [Fact]
+    public async Task Dashboard_AdminConsoleHooksPresent()
+    {
+        using var client = _factory.CreateClient();
+
+        var html = await (await client.GetAsync("/dashboard/")).Content.ReadAsStringAsync();
+        Assert.Contains("admin-section", html);
+        Assert.Contains("admin-users", html);
+        Assert.Contains("admin-audit", html);
+        Assert.Contains("admin-failures", html);
+        Assert.Contains("id=\"export-csv\"", html);
+
+        var js = await (await client.GetAsync("/dashboard/app.js")).Content.ReadAsStringAsync();
+        Assert.Contains("loadAdmin", js);
+        Assert.Contains("/api/admin/users", js);
+        Assert.Contains("/api/admin/audit", js);
+        Assert.Contains("data-suspend", js);
+        Assert.Contains("data-restore", js);
+        Assert.Contains("exportCsv", js);
+        Assert.Contains("/api/failures/export", js);
+    }
 }

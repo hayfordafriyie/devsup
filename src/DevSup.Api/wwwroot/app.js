@@ -69,6 +69,22 @@
         return response.json();
     }
 
+    var isAdmin = false;
+
+    async function adminApi(path) {
+        var response = await fetch(path, {
+            headers: token ? { Authorization: "Bearer " + token } : {}
+        });
+        if (response.status === 403) {
+            return null;
+        }
+        if (!response.ok) {
+            var body = await response.json().catch(function () { return null; });
+            throw new Error(body && body.message ? body.message : (response.status + " " + response.statusText));
+        }
+        return response.json();
+    }
+
     function renderCards(overview) {
         var cards = document.getElementById("cards");
         var counts = overview.tickets;
@@ -164,6 +180,90 @@
         section.hidden = false;
     }
 
+    function renderAdminUsers(users) {
+        var tbody = document.getElementById("admin-users").querySelector("tbody");
+        tbody.innerHTML = users.map(function (u) {
+            var status = u.active ? '<span class="status ok">Active</span>' : '<span class="status bad">Suspended</span>';
+            var action = u.active
+                ? '<button data-suspend="' + u.id + '">Suspend</button>'
+                : '<button data-restore="' + u.id + '">Restore</button>';
+            return "<tr>" +
+                "<td>" + escapeHtml(u.email) + "</td>" +
+                "<td>" + escapeHtml(u.displayName) + "</td>" +
+                "<td>" + (u.isAdmin ? '<span class="status warn">Admin</span>' : '<span class="muted">Member</span>') + "</td>" +
+                "<td>" + status + "</td>" +
+                "<td>" + u.repositoryCount + "</td>" +
+                "<td>" + u.ticketCount + "</td>" +
+                "<td>" + action + "</td>" +
+                "</tr>";
+        }).join("");
+    }
+
+    function renderAdminAudit(entries) {
+        var list = document.getElementById("admin-audit");
+        if (entries.length === 0) {
+            list.innerHTML = '<li class="muted">No audit entries.</li>';
+            return;
+        }
+        list.innerHTML = entries.slice(0, 100).map(function (e) {
+            return "<li><span class=\"muted\">" + escapeHtml(new Date(e.timestamp).toLocaleString()) + "</span> " +
+                "<strong>" + escapeHtml(e.actorEmail) + "</strong> " + escapeHtml(e.action) +
+                ' <span class="muted">' + escapeHtml(e.entityType) + "</span>" +
+                (e.after ? ' &rarr; <em>' + escapeHtml(e.after) + "</em>" : "") + "</li>";
+        }).join("");
+    }
+
+    function renderAdminFailures(page) {
+        var tbody = document.getElementById("admin-failures").querySelector("tbody");
+        if (page.items.length === 0) {
+            tbody.innerHTML = "<tr><td colspan=\"5\" class=\"muted\">No failures recorded.</td></tr>";
+            return;
+        }
+        tbody.innerHTML = page.items.map(function (f) {
+            return "<tr>" +
+                "<td>" + escaped(new Date(f.occurredAt).toLocaleString()) + "</td>" +
+                "<td>" + escaped((f.method || "") + " " + (f.path || "")) + "</td>" +
+                "<td>" + f.statusCode + "</td>" +
+                "<td>" + escaped(f.ticketStatus || "—") + "</td>" +
+                "<td>" + escaped(f.patchSummary || "—") + "</td>" +
+                "</tr>";
+        }).join("");
+    }
+
+    async function loadAdmin() {
+        var users = await adminApi("/api/admin/users");
+        if (users === null) {
+            isAdmin = false;
+            document.getElementById("admin-toggle").hidden = true;
+            document.getElementById("admin-section").hidden = true;
+            return;
+        }
+        isAdmin = true;
+        document.getElementById("admin-toggle").hidden = false;
+        if (document.getElementById("admin-section").hidden) return;
+        renderAdminUsers(users);
+        var audit = await adminApi("/api/admin/audit");
+        renderAdminAudit(audit || []);
+        var failures = await adminApi("/api/failures?pageSize=50");
+        renderAdminFailures(failures || { items: [] });
+    }
+
+    async function exportCsv() {
+        var response = await fetch("/api/failures/export", {
+            headers: { Authorization: "Bearer " + token }
+        });
+        if (!response.ok) throw new Error("Failed to export CSV");
+        var blob = await response.blob();
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.href = url;
+        link.download = "devsup-failures.csv";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    }
+
     async function load() {
         var overview = await api("/api/overview");
         var tickets = await api("/api/tickets");
@@ -172,6 +272,7 @@
         renderRepositories(overview);
         renderTickets(tickets);
         renderWebhooks(webhooks);
+        await loadAdmin();
     }
 
     function showSession() {
@@ -196,15 +297,52 @@
 
     document.addEventListener("click", function (event) {
         var button = event.target.closest("[data-delete]");
-        if (!button) return;
-        var id = button.getAttribute("data-delete");
-        fetch("/api/webhooks/" + id, {
-            method: "DELETE",
-            headers: { Authorization: "Bearer " + token }
-        }).then(function (response) {
-            if (!response.ok) throw new Error("Failed to delete webhook");
-            return load();
-        }).catch(function (e) { showError(e.message); });
+        if (button) {
+            var id = button.getAttribute("data-delete");
+            fetch("/api/webhooks/" + id, {
+                method: "DELETE",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to delete webhook");
+                return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-suspend]");
+        if (button) {
+            var suspendId = button.getAttribute("data-suspend");
+            fetch("/api/admin/users/" + suspendId + "/deactivate", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to suspend account");
+                return loadAdmin();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-restore]");
+        if (button) {
+            var restoreId = button.getAttribute("data-restore");
+            fetch("/api/admin/users/" + restoreId + "/activate", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to restore account");
+                return loadAdmin();
+            }).catch(function (e) { showError(e.message); });
+        }
+    });
+
+    document.getElementById("admin-toggle").addEventListener("click", function () {
+        var section = document.getElementById("admin-section");
+        section.hidden = !section.hidden;
+        if (!section.hidden) {
+            loadAdmin().catch(function (e) { showError(e.message); });
+        }
+    });
+
+    document.getElementById("export-csv").addEventListener("click", function () {
+        exportCsv().catch(function (e) { showError(e.message); });
     });
 
     var form = document.getElementById("webhook-form");

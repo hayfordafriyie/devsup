@@ -13,6 +13,7 @@
             <input id="token" type="password" placeholder="Paste your API token" autocomplete="off" />
             <button id="connect">Connect</button>
             <button id="refresh" hidden>Refresh</button>
+            <button id="admin-toggle" hidden>Admin console</button>
             <span id="session-user"></span>
         </div>
     </header>
@@ -65,6 +66,43 @@
                 </select>
                 <button type="submit">Add webhook</button>
             </form>
+        </section>
+
+        <section id="admin-section" class="panel" hidden>
+            <h2>Admin console</h2>
+            <h3>Users</h3>
+            <table id="admin-users">
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Name</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Repos</th>
+                        <th>Tickets</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+
+            <h3>Audit trail</h3>
+            <ul id="admin-audit"></ul>
+
+            <h3>Failure history</h3>
+            <button id="export-csv">Export CSV</button>
+            <table id="admin-failures">
+                <thead>
+                    <tr>
+                        <th>Occurred</th>
+                        <th>Request</th>
+                        <th>Code</th>
+                        <th>Ticket</th>
+                        <th>Patch</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
         </section>
     </main>
 
