@@ -5,11 +5,10 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.27** — the **repository-scoped webhooks** release. Webhook
-> endpoints accept an optional `repositoryIds` list on create; scoped endpoints only
-> receive events for their repositories (unscoped still receive all). Scope is echoed on
-> `GET /api/webhooks`, validated against your own repositories, and editable via a
-> multi-select in the dashboard. 239 tests passing.
+> Project status: **v0.28** — the **webhook retry-all** release.
+> `POST /api/webhooks/{id}/deliveries/retry-all` re-queues every failed delivery for an
+> endpoint in one call (audited `webhook.retryAll`), and the dashboard delivery log
+> gains a **Retry all failed** button. 240 tests passing.
 
 ---
 
@@ -546,7 +545,7 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
   `aiKey.create`, `aiKey.update`, `aiKey.delete` — configuration writes
 - `user.deactivate`, `user.activate` — admin account changes
 - `account.profileUpdate`, `account.passwordChange` — self-service profile/password changes
-- `webhook.test`, `webhook.retry` — delivery operations
+- `webhook.test`, `webhook.retry`, `webhook.retryAll` — delivery operations
 - `webhook.activate`, `webhook.deactivate` — endpoint pause/resume
 - `repository.pause`, `repository.unpause` — monitoring pause/resume
 - `repository.archive`, `repository.unarchive` — repository retirement/restore
@@ -606,9 +605,14 @@ and email outbox draw on, per endpoint.
 - `POST /api/webhooks/{id}/deliveries/{deliveryId}/retry` — re-queues a failed delivery:
   resets its attempt count and last error so the outbox worker picks it up again, without
   touching the endpoint or its secret. Already-sent deliveries reject retry with `409`.
+- `POST /api/webhooks/{id}/deliveries/retry-all` (v0.28) — the bulk form: re-queues
+  **every** failed delivery for the endpoint in one call, returning the count re-queued.
+  Handy after an outage at the receiver. Ownership-scoped and audited as
+  `webhook.retryAll`.
 
-Both are ownership-scoped like every other webhook operation, and both are audited
-(`webhook.test`, `webhook.retry`).
+All three are ownership-scoped like every other webhook operation, and all are audited
+(`webhook.test`, `webhook.retry`, `webhook.retryAll`). The dashboard delivery log shows
+a **Retry all failed** button whenever the endpoint has pending deliveries.
 
 ## 12. Security & sanitization
 
@@ -769,6 +773,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/webhooks/{id}/deliveries` | Bearer | Per-endpoint webhook delivery log (paginated) |
 | `POST` | `/api/webhooks/{id}/test` | Bearer | Queue a signed `devsup.ping` test delivery |
 | `POST` | `/api/webhooks/{id}/deliveries/{deliveryId}/retry` | Bearer | Re-queue a failed delivery |
+| `POST` | `/api/webhooks/{id}/deliveries/retry-all` | Bearer | Re-queue every failed delivery for the endpoint |
 | `GET` | `/api/emails` | Bearer | Your email outbox, newest first (`sent` filter, paginated) |
 | `POST` | `/api/emails/{id}/retry` | Bearer | Re-queue a failed email message |
 | `GET` | `/api/notification-preferences` | Bearer | List your per-repository email delivery preferences |
@@ -834,6 +839,7 @@ push/PR to `master`.
 - **v0.25** *(done)* — admin fleet health: `GET /api/admin/repositories` cross-tenant view (owner, health, pause/archive, open tickets, failures; health/owner/paused/archived filters) and a health breakdown on `GET /api/admin/overview`; dashboard admin console Fleet health panel
 - **v0.26** *(done)* — per-repository retention overrides: `PUT /api/repositories/{id}/retention` (inherit / keep-forever / custom days), the retention worker honours each policy for that repo's failures + tickets, audited `repository.retention`, dashboard Retention control; migration `AddRepositoryRetention`
 - **v0.27** *(done)* — repository-scoped webhooks: optional `repositoryIds` scope on `POST /api/webhooks`; scoped endpoints receive only their repositories' events (unscoped = all), scope echoed on list, validated to owned repos, dashboard multi-select; migration `AddWebhookRepositoryScope`
+- **v0.28** *(done)* — webhook retry-all: `POST /api/webhooks/{id}/deliveries/retry-all` re-queues every failed delivery for an endpoint (audited `webhook.retryAll`), dashboard Retry all failed button
 
 ---
 
