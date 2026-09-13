@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using DevSup.Api;
 using DevSup.Api.Auth;
+using DevSup.Agent.Git;
 using DevSup.Infrastructure.Email;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Security;
@@ -70,6 +71,8 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
 
     public FakeEmailSender EmailSender { get; } = new();
 
+    public FakeGitAdapter Git { get; } = new();
+
     public GitHubAuthSettings GitHubAuth { get; } = new()
     {
         ClientId = "test-client-id",
@@ -85,7 +88,8 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
             {
                 ["GitHub:ClientId"] = "test-client-id",
                 ["GitHub:ClientSecret"] = "test-client-secret",
-                ["Emailing:IntervalSeconds"] = "3600"
+                ["Emailing:IntervalSeconds"] = "3600",
+                ["Repairing:IntervalSeconds"] = "3600"
             });
         });
 
@@ -97,12 +101,14 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<IEmailSender>();
             services.RemoveAll<IGitHubGateway>();
             services.RemoveAll<GitHubAuthSettings>();
+            services.RemoveAll<IGitAdapter>();
 
             services.AddDbContext<DevSupDbContext>(options =>
                 options.UseInMemoryDatabase("devsup-tests", _databaseRoot));
             services.AddSingleton<IEmailSender>(EmailSender);
             services.AddSingleton<IGitHubGateway>(new FakeGitHubGateway(GitHubAuth));
             services.AddSingleton(GitHubAuth);
+            services.AddSingleton<IGitAdapter>(Git);
         });
     }
 }
