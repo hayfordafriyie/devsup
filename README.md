@@ -5,10 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.30** — the **digest unsubscribe** release. Every digest email
-> now carries a one-click unsubscribe link backed by a per-user token
-> (`GET /api/digest/unsubscribe`, no login needed) that disables the digest and burns
-> the token; set `Digests:BaseUrl` to point links at your deployment. 245 tests passing.
+> Project status: **v0.31** — the **notification-preference portability** release.
+> `GET /api/notification-preferences/export` downloads your per-repository email
+> preferences as CSV and `POST /api/notification-preferences/import` upserts them in
+> bulk (unknown/inaccessible rows skipped and reported). The dashboard Preferences
+> panel gains Export/Import CSV controls. 247 tests passing.
 
 ---
 
@@ -284,6 +285,14 @@ events *per event* — `failureDetected`, `notCodeError`, `fixPushed`, `fixPendi
 **email only**; webhook fan-out is governed by each endpoint's own `events` mask, so you
 can silence your inbox without silencing your Slack channel. The dashboard's
 **Preferences** panel edits the same settings with checkboxes.
+
+Since v0.31 preferences are portable: `GET /api/notification-preferences/export`
+downloads them as CSV (`repositoryId,cloneUrl,emailEnabled,mutedEvents`, muted events
+semicolon-separated), and `POST /api/notification-preferences/import` accepts that same
+CSV (raw body) to upsert in bulk — handy for restoring a fleet or applying one team's
+policy to another account. Rows naming an unknown event or a repository you can't access
+are skipped and reported in the response (`updated` / `skipped` / `errors`); the
+dashboard panel has matching **Export CSV** / **Import CSV** controls.
 
 ## 8. Webhooks, channels & health checks
 
@@ -785,6 +794,8 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `POST` | `/api/emails/{id}/retry` | Bearer | Re-queue a failed email message |
 | `GET` | `/api/notification-preferences` | Bearer | List your per-repository email delivery preferences |
 | `PUT` | `/api/notification-preferences` | Bearer | Upsert a repository's preference (`emailEnabled`, `mutedEvents`) |
+| `GET` | `/api/notification-preferences/export` | Bearer | Download preferences as CSV |
+| `POST` | `/api/notification-preferences/import` | Bearer | Bulk-upsert preferences from CSV (`updated`/`skipped`/`errors`) |
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
 | `GET` | `/api/admin/overview` | Bearer + admin | Platform-wide totals + repository health breakdown |
 | `GET` | `/api/admin/repositories` | Bearer + admin | Cross-tenant fleet view (`health`, `owner`, `paused`, `archived` filters; paginated) |
@@ -850,6 +861,7 @@ push/PR to `master`.
 - **v0.28** *(done)* — webhook retry-all: `POST /api/webhooks/{id}/deliveries/retry-all` re-queues every failed delivery for an endpoint (audited `webhook.retryAll`), dashboard Retry all failed button
 - **v0.29** *(done)* — fleet CSV export: `GET /api/admin/repositories/export` streams the filtered cross-tenant fleet view as CSV, with an Export CSV button in the dashboard Fleet health panel
 - **v0.30** *(done)* — digest unsubscribe: per-user `DigestUnsubscribeToken` embedded as a one-click link in digest emails; anonymous `GET /api/digest/unsubscribe` disables the digest and burns the token (audited `account.digestUnsubscribe`); `Digests:BaseUrl` config; migration `AddUserDigestUnsubscribeToken`
+- **v0.31** *(done)* — notification-preference portability: CSV `export`/`import` endpoints for per-repository email preferences (bulk upsert, unknown/inaccessible rows skipped + reported), dashboard Export/Import CSV controls
 
 ---
 
