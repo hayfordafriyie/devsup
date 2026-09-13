@@ -923,6 +923,108 @@ app.MapDelete("/api/repositories/{id:guid}/members/{userId:guid}", async (Guid i
     return Results.NoContent();
 }).RequireAuthorization();
 
+app.MapPost("/api/repositories/{id:guid}/transfer", async (Guid id, TransferRepositoryRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var repository = await db.ConnectedRepositories
+        .FirstOrDefaultAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+    if (repository is null)
+    {
+        return Results.NotFound();
+    }
+
+    var target = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Email == request.Email, ct);
+    if (target is null || target.Id == ownerId)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "No other registered user has that email.");
+    }
+
+    var membership = await db.RepositoryMembers
+        .FirstOrDefaultAsync(m => m.RepositoryId == id && m.UserId == target.Id, ct);
+    if (membership is null || membership.Role != MemberRole.Operator)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+            detail: "Ownership can only be transferred to an existing operator member.");
+    }
+
+    var collides = await db.ConnectedRepositories.AsNoTracking()
+        .AnyAsync(r => r.OwnerUserId == target.Id && r.CloneUrl == repository.CloneUrl, ct);
+    if (collides)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict,
+            detail: "The new owner already has a repository with this clone URL.");
+    }
+
+    var previousOwner = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == ownerId, ct);
+    db.Entry(repository).Property(r => r.OwnerUserId).CurrentValue = target.Id;
+    db.RepositoryMembers.Remove(membership);
+
+    var previousOwnerMembership = await db.RepositoryMembers
+        .FirstOrDefaultAsync(m => m.RepositoryId == id && m.UserId == ownerId, ct);
+    if (previousOwnerMembership is null)
+    {
+        db.RepositoryMembers.Add(new RepositoryMember
+        {
+            RepositoryId = id,
+            UserId = ownerId,
+            Role = MemberRole.Operator,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+    }
+    else
+    {
+        db.Entry(previousOwnerMembership).Property(m => m.Role).CurrentValue = MemberRole.Operator;
+    }
+
+    db.EmailMessages.Add(new EmailMessage
+    {
+        Id = Guid.NewGuid(),
+        UserId = target.Id,
+        To = target.Email,
+        Subject = $"DevSup: you now own {repository.CloneUrl}",
+        HtmlBody = $"<p><strong>{System.Net.WebUtility.HtmlEncode(previousOwner?.Email ?? "The previous owner")}</strong> transferred ownership of " +
+                   $"<code>{System.Net.WebUtility.HtmlEncode(repository.CloneUrl)}</code> to you.</p>" +
+                   $"<p>You can now manage its members, pause/resume monitoring, and configure its app URL. " +
+                   $"Make sure a git provider token is linked so the repair agent can push fixes.</p>",
+        CreatedAt = DateTimeOffset.UtcNow
+    });
+
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "repository.transfer", "ConnectedRepository",
+        repository.Id.ToString(), before: previousOwner?.Email, after: target.Email, ct: ct);
+
+    return Results.Ok(new { repositoryId = repository.Id, ownerUserId = target.Id, ownerEmail = target.Email });
+}).RequireAuthorization();
+
+app.MapPost("/api/repositories/{id:guid}/leave", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var userId = user.GetUserId();
+    var repository = await db.ConnectedRepositories.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+    if (repository is null)
+    {
+        return Results.NotFound();
+    }
+    if (repository.OwnerUserId == userId)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict,
+            detail: "Transfer ownership to another member before leaving your own repository.");
+    }
+
+    var membership = await db.RepositoryMembers.FirstOrDefaultAsync(m => m.RepositoryId == id && m.UserId == userId, ct);
+    if (membership is null)
+    {
+        return Results.NotFound();
+    }
+
+    var email = (await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId, ct))?.Email ?? userId.ToString();
+    db.RepositoryMembers.Remove(membership);
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(userId, user.Identity?.Name ?? "", "repository.leave", "RepositoryMember",
+        $"{id}/{userId}", before: email, ct: ct);
+
+    return Results.NoContent();
+}).RequireAuthorization();
+
 app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest httpRequest, ClaimsPrincipal user, DevSupDbContext db, IFailureClassifier classifier, CancellationToken ct) =>
 {
     if (httpRequest.Headers.TryGetValue(PayloadSanitizer.SchemaVersionHeaderName, out var versionHeader)

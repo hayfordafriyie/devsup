@@ -151,16 +151,23 @@
             } else {
                 list.innerHTML = data.members.map(function (m) {
                     var role = m.role === "Observer" ? "observer" : "operator";
-                    var remove = data.owner
-                        ? '<button data-member-remove="' + m.userId + '" data-member-repo="' + repoId + '" title="Revoke access">&times;</button>'
-                        : "";
+                    var controls = "";
+                    if (data.owner) {
+                        if (role === "operator") {
+                            controls += '<button data-member-transfer="' + m.userId + '" data-member-repo="' + repoId +
+                                '" data-member-email="' + escapeHtml(m.email) + '" title="Make this member the owner">Transfer</button>';
+                        }
+                        controls += '<button data-member-remove="' + m.userId + '" data-member-repo="' + repoId + '" title="Revoke access">&times;</button>';
+                    }
                     return "<li>" + badge({ label: role, kind: "muted" }) +
-                        " " + escapeHtml(m.displayName) + " &lt;" + escapeHtml(m.email) + "&gt;" + remove + "</li>";
+                        " " + escapeHtml(m.displayName) + " &lt;" + escapeHtml(m.email) + "&gt;" + controls + "</li>";
                 }).join("");
             }
             form.hidden = !data.owner;
             emailInput.value = "";
             form.setAttribute("data-repo-id", repoId);
+            document.getElementById("repo-leave").hidden = data.owner;
+            document.getElementById("repo-leave").setAttribute("data-repo-leave", repoId);
             section.hidden = false;
             return data;
         });
@@ -619,6 +626,37 @@
                 if (!response.ok) throw new Error("Failed to remove member");
                 return loadRepositoryMembers(repoMemberRepo);
             }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-member-transfer]");
+        if (button) {
+            var transferRepo = button.getAttribute("data-member-repo");
+            var transferEmail = button.getAttribute("data-member-email");
+            if (window.confirm("Transfer ownership of this repository to " + transferEmail + "?")) {
+                fetch("/api/repositories/" + transferRepo + "/transfer", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+                    body: JSON.stringify({ email: transferEmail })
+                }).then(function (response) {
+                    if (!response.ok) throw new Error("Failed to transfer ownership");
+                    return loadRepositoryMembers(transferRepo).then(function () { return load(); });
+                }).catch(function (e) { showError(e.message); });
+            }
+            return;
+        }
+        button = event.target.closest("[data-repo-leave]");
+        if (button) {
+            var leaveRepo = button.getAttribute("data-repo-leave");
+            if (window.confirm("Leave this shared repository? You will lose access until re-invited.")) {
+                fetch("/api/repositories/" + leaveRepo + "/leave", {
+                    method: "POST",
+                    headers: { Authorization: "Bearer " + token }
+                }).then(function (response) {
+                    if (!response.ok) throw new Error("Failed to leave repository");
+                    document.getElementById("repo-members-panel").hidden = true;
+                    return load();
+                }).catch(function (e) { showError(e.message); });
+            }
             return;
         }
         button = event.target.closest("[data-ticket-detail]");

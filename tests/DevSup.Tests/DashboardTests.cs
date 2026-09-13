@@ -142,5 +142,10 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("data-members-close", js);
         Assert.Contains("repo-member-form", html2);
         Assert.Contains("canTriage", js);
+        Assert.Contains("data-member-transfer", js);
+        Assert.Contains("data-repo-leave", js);
+        Assert.Contains("repo-leave", html2);
+        Assert.Contains("\"/api/repositories/\" + transferRepo + \"/transfer\"", js);
+        Assert.Contains("\"/api/repositories/\" + leaveRepo + \"/leave\"", js);
     }
 }
