@@ -5,12 +5,12 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.19** — the **ownership transfer & member self-service** release.
-> Repository owners can hand a repo to an existing **operator** member
-> (`POST /api/repositories/{id}/transfer`), demoting themselves to operator so
-> collaboration continues without interruption; any member can remove themselves with
-> `POST /api/repositories/{id}/leave`. Both are audited, and the dashboard Members panel
-> grows **Transfer** and **Leave repository** controls. 194 tests passing.
+> Project status: **v0.20** — the **repository archiving** release. Retire a repository
+> with `POST /api/repositories/{id}/archive` and it vanishes from the repository list,
+> overview and failure/ticket feeds while every background pipeline (health, repair,
+> verification, digest) skips it; `POST /api/repositories/{id}/unarchive` restores it
+> intact. Ingest returns `409` while archived, the dashboard gains an **Archived**
+> section with one-click restore, and both transitions are audited. 203 tests passing.
 
 ---
 
@@ -268,6 +268,21 @@ The dashboard and API let you take an endpoint out of rotation without deleting 
 Inactive endpoints stay listed and keep their history but receive nothing — the
 delivery outbox drains them silently, exactly like deleted endpoints.
 
+### Archiving repositories (v0.20)
+
+Pause is temporary; **archive** is retirement. `POST /api/repositories/{id}/archive`
+sets `Archived` + `ArchivedAt` (migration `AddRepositoryArchived`) and takes the
+repository off the active surface: it disappears from the repository list, the
+overview and the failure/ticket feeds, and every background pipeline skips it (health
+probes, repair pick-up, fix verification and digests). `POST
+/api/repositories/{id}/unarchive` brings it back exactly as it was — tickets, failures
+and health state are retained, never deleted. `GET /api/repositories?archived=true`
+lists retired repos so the owner can restore them. Ingest to an archived repo is
+rejected with `409`, and the dashboard keeps an **Archived** section with one-click
+**Restore**. Both transitions are audited (`repository.archive` /
+`repository.unarchive`) and are owner-only. Archived repositories are hidden from
+**shared members** too — only the owner sees the archived list.
+
 ## 9. Event replay & re-dispatch
 
 Some failures deserve a second look — a transient SMTP outage, a receiver that was
@@ -407,6 +422,7 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
 - `webhook.test`, `webhook.retry` — delivery operations
 - `webhook.activate`, `webhook.deactivate` — endpoint pause/resume
 - `repository.pause`, `repository.unpause` — monitoring pause/resume
+- `repository.archive`, `repository.unarchive` — repository retirement/restore
 - `repository.share`, `repository.unshare` — repository sharing (invite / revoke)
 - `repository.transfer`, `repository.leave` — ownership hand-off and member self-removal
 - `email.retry` — re-queuing a failed outbound email
@@ -482,7 +498,7 @@ devsup/
 ## 14. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
 
 - `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, created timestamp
-- `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`)
+- `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`), pause state (`Paused`, `PausedAt`), archive state (`Archived`, `ArchivedAt`)
 - `RepositoryMembers` — cross-tenant shares (repository + user composite key, role `observer`/`operator`, created at)
 - `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
@@ -497,7 +513,7 @@ Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` 
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`).
 
 ### The repair agent (v0.4)
 
@@ -573,10 +589,12 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/auth/github/callback` | — | GitHub OAuth callback → links account, returns JWT |
 | `GET` | `/api/auth/gitlab/login` | — | Start GitLab OAuth (redirects to GitLab) |
 | `GET` | `/api/auth/gitlab/callback` | — | GitLab OAuth callback → links account, returns JWT |
-| `GET` | `/api/repositories` | Bearer | List connected repositories |
+| `GET` | `/api/repositories` | Bearer | List connected repositories (add `?archived=true` for retired ones) |
 | `POST` | `/api/repositories` | Bearer | Connect a repository (provider, clone URL, branch) |
 | `POST` | `/api/repositories/{id}/pause` | Bearer | Pause monitoring (health checks, ingest, repair) |
 | `POST` | `/api/repositories/{id}/unpause` | Bearer | Resume monitoring |
+| `POST` | `/api/repositories/{id}/archive` | Bearer | Retire a repository (hidden from feeds, pipelines skip it) |
+| `POST` | `/api/repositories/{id}/unarchive` | Bearer | Restore an archived repository |
 | `GET` | `/api/repositories/{id}/members` | Bearer | List repository members (`owner` flag) |
 | `POST` | `/api/repositories/{id}/members` | Bearer | Invite a member (`{ email, role }`; reshare updates role) |
 | `DELETE` | `/api/repositories/{id}/members/{userId}` | Bearer | Revoke a member's access |
@@ -661,6 +679,7 @@ push/PR to `master`.
 - **v0.17** *(done)* — teams & shared repositories: owners invite/revoke members by role, shared members see the repo across overview/tickets/failures/preferences/digest while ingest + repair stay owner-only; dashboard Members panel (invite form + revoke), migration `AddRepositoryMembers`
 - **v0.18** *(done)* — role enforcement & collaborative notifications: operator members triage (close/reopen/redispatch) while observers get `403`; ticket detail reports `canTriage` and the dashboard hides triage actions accordingly; operator members are copied on incident + fix-status emails (per their own notification preferences)
 - **v0.19** *(done)* — ownership transfer & member self-service: owner hands a repo to an operator member (previous owner demoted to operator, new owner emailed), members can leave a shared repo; both audited, dashboard Transfer/Leave controls
+- **v0.20** *(done)* — repository archiving: archive retires a repo from the repository list, overview, failure/ticket feeds and all background pipelines (health, repair, verification, digest) while retaining history; ingest returns `409`, `?archived=true` lists retired repos, dashboard Archived section restores them; audited, migration `AddRepositoryArchived`
 
 ---
 
