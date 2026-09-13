@@ -38,7 +38,10 @@ public enum WebhookEvent
     FixPushed,
     FixPendingReview,
     NeedsHumanReview,
-    NotCodeError
+    NotCodeError,
+
+    /// <summary>Synthetic connectivity check sent by <c>POST /api/webhooks/{id}/test</c>.</summary>
+    Ping
 }
 
 public enum AiModelProvider

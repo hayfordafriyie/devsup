@@ -42,7 +42,7 @@ public sealed class WebhookNotificationTests : IAsyncLifetime
         var payload = await created.Content.ReadFromJsonAsync<CreateWebhookResponse>(Helpers.ApiJson);
         Assert.NotNull(payload);
         Assert.NotEmpty(payload.Secret);
-        Assert.Equal(5, payload.Events.Count);
+        Assert.Equal(6, payload.Events.Count);
 
         var listResponse = await _client.GetAsync("/api/webhooks");
         var listedJson = await listResponse.Content.ReadAsStringAsync();
@@ -50,7 +50,7 @@ public sealed class WebhookNotificationTests : IAsyncLifetime
         var single = Assert.Single(listed!);
         Assert.Equal("https://hooks.example.com/devsup", single.Url);
         Assert.DoesNotContain("secret", listedJson, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(5, single.Events.Count);
+        Assert.Equal(6, single.Events.Count);
 
         var deleteResponse = await _client.DeleteAsync($"/api/webhooks/{single.Id}");
         Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);

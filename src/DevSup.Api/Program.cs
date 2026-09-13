@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using DevSup.Agent.Ai;
 using DevSup.Agent.Git;
 using DevSup.Agent.PullRequests;
@@ -269,6 +270,61 @@ app.MapPost("/api/users/login", async (LoginRequest request, DevSupDbContext db,
     await audit.RecordAsync(user.Id, user.Email, "user.login", "User", user.Id.ToString(), ct: ct);
     return Results.Ok(new LoginResponse(token, expiresAt, new UserResponse(user.Id, user.Email, user.DisplayName)));
 });
+
+app.MapGet("/api/account", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var account = await db.Users.AsNoTracking()
+        .SingleAsync(u => u.Id == user.GetUserId(), ct);
+    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.CreatedAt));
+}).RequireAuthorization();
+
+app.MapPut("/api/account", async (UpdateAccountRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(request.DisplayName))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Display name is required.");
+    }
+
+    var account = await db.Users.FirstOrDefaultAsync(u => u.Id == user.GetUserId(), ct);
+    if (account is null)
+    {
+        return Results.NotFound();
+    }
+
+    var before = account.DisplayName;
+    db.Entry(account).Property(u => u.DisplayName).CurrentValue = request.DisplayName.Trim();
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(account.Id, account.Email, "account.profileUpdate", "User",
+        account.Id.ToString(), before: before, after: account.DisplayName, ct: ct);
+
+    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.CreatedAt));
+}).RequireAuthorization();
+
+app.MapPost("/api/account/password", async (ChangePasswordRequest request, ClaimsPrincipal user, DevSupDbContext db, IPasswordHasherService hasher, AuditRecorder audit, CancellationToken ct) =>
+{
+    var account = await db.Users.FirstOrDefaultAsync(u => u.Id == user.GetUserId(), ct);
+    if (account is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (!hasher.Verify(request.CurrentPassword ?? string.Empty, account.PasswordHash))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status401Unauthorized, detail: "Current password is incorrect.");
+    }
+
+    if (request.NewPassword is null || request.NewPassword.Length < 8)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Password must be at least 8 characters.");
+    }
+
+    db.Entry(account).Property(u => u.PasswordHash).CurrentValue = hasher.Hash(request.NewPassword);
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(account.Id, account.Email, "account.passwordChange", "User",
+        account.Id.ToString(), ct: ct);
+
+    return Results.NoContent();
+}).RequireAuthorization();
 
 const string OAuthStateCookie = "devsup_oauth_state";
 
@@ -1190,6 +1246,75 @@ app.MapPost("/api/webhooks/{id:guid}/rotate", async (Guid id, ClaimsPrincipal us
         webhook.Id.ToString(), before: webhook.Url, ct: ct);
 
     return Results.Ok(new CreateWebhookResponse(webhook.Id, webhook.Url, secret, ResolveEvents(webhook.EventMask), webhook.CreatedAt, webhook.Name, webhook.Channel));
+}).RequireAuthorization();
+
+app.MapPost("/api/webhooks/{id:guid}/test", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var webhook = await db.WebhookEndpoints.AsNoTracking()
+        .FirstOrDefaultAsync(w => w.Id == id && w.UserId == ownerId, ct);
+    if (webhook is null)
+    {
+        return Results.NotFound();
+    }
+
+    var payload = new
+    {
+        @event = "devsup.ping",
+        webhookId = webhook.Id,
+        webhookUrl = webhook.Url,
+        webhookName = webhook.Name,
+        channel = webhook.Channel.ToString().ToLowerInvariant(),
+        timestamp = DateTimeOffset.UtcNow
+    };
+    var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var delivery = new WebhookDelivery
+    {
+        Id = Guid.NewGuid(),
+        UserId = ownerId,
+        WebhookId = webhook.Id,
+        Event = WebhookEvent.Ping,
+        Payload = json,
+        CreatedAt = DateTimeOffset.UtcNow
+    };
+    db.WebhookDeliveries.Add(delivery);
+    await db.SaveChangesAsync(ct);
+
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == ownerId, ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "webhook.test", "WebhookEndpoint",
+        webhook.Id.ToString(), after: webhook.Url, ct: ct);
+
+    return Results.Accepted(
+        $"/api/webhooks/{webhook.Id}/deliveries/{delivery.Id}",
+        new WebhookDeliveryResponse(delivery.Id, delivery.Event.ToString(), delivery.Sent, delivery.SentAt, delivery.Attempts, delivery.LastError, delivery.CreatedAt));
+}).RequireAuthorization();
+
+app.MapPost("/api/webhooks/{id:guid}/deliveries/{deliveryId:guid}/retry", async (Guid id, Guid deliveryId, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var delivery = await db.WebhookDeliveries
+        .FirstOrDefaultAsync(d => d.Id == deliveryId && d.WebhookId == id && d.UserId == ownerId, ct);
+    if (delivery is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (delivery.Sent)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "This delivery was already sent.");
+    }
+
+    db.Entry(delivery).Property(d => d.Attempts).CurrentValue = 0;
+    db.Entry(delivery).Property(d => d.LastError).CurrentValue = null;
+    await db.SaveChangesAsync(ct);
+
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == ownerId, ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "webhook.retry", "WebhookDelivery",
+        delivery.Id.ToString(), before: delivery.LastError, ct: ct);
+
+    return Results.Ok(new WebhookDeliveryResponse(delivery.Id, delivery.Event.ToString(), delivery.Sent, delivery.SentAt, delivery.Attempts, delivery.LastError, delivery.CreatedAt));
 }).RequireAuthorization();
 
 app.MapGet("/api/notification-preferences", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
