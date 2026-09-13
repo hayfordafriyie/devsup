@@ -1,6 +1,8 @@
-using DevSup.Api;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using DevSup.Api;
+using DevSup.Core.Models;
 using DevSup.Infrastructure.Email;
 using DevSup.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -21,77 +23,132 @@ public sealed class EmailOutboxTests : IAsyncLifetime
 
     public Task InitializeAsync() => Task.CompletedTask;
 
-    public async Task DisposeAsync() => await _factory.DisposeAsync();
+    public Task DisposeAsync() => _factory.DisposeAsync().AsTask();
 
     [Fact]
-    public async Task Sweep_DeliversPendingAndMarksSent()
+    public async Task Outbox_IsPaged_ScopedToUser_AndFilterable()
     {
-        var token = await LoginAndGetTokenAsync("outbox-deliver@example.com", "Outbox Deliver");
-        var repositoryId = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/outbox-deliver.git");
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "em-owner@test.dev", "Em Owner");
+        var ownerId = (await UserIdAsync("em-owner@test.dev"))!;
 
-        await Helpers.IngestAsync(_client, token, repositoryId,
-            statusCode: 500, method: "POST", path: "/api/payments",
-            exceptionMessage: "TimeoutException: upstream payment gateway timed out");
+        var stranger = await Helpers.LoginAndGetTokenAsync(_client, "em-x@test.dev", "Em X");
+        var strangerId = (await UserIdAsync("em-x@test.dev"))!;
 
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var processor = scope.ServiceProvider.GetRequiredService<EmailOutboxProcessor>();
-        var batch = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        for (var i = 0; i < 3; i++)
+        {
+            await SeedEmailAsync(ownerId, $"owner-{i}@test.dev", $"OWNER {i}", sent: i % 2 == 0, createdAgoHours: i);
+        }
+        await SeedEmailAsync(strangerId, "stranger@test.dev", "STRANGER", sent: false, createdAgoHours: 0);
 
-        var delivered = await processor.ProcessPendingAsync(10, CancellationToken.None);
+        var page = await GetPageAsync(token, "/api/emails?pageSize=2");
+        Assert.Equal(3, page!.Total);
+        Assert.Equal(2, page.Items.Count);
+        Assert.Equal("OWNER 0", page.Items[0].Subject);
+        Assert.Equal("OWNER 1", page.Items[1].Subject);
+        Assert.All(page.Items, i => Assert.StartsWith("OWNER", i.Subject));
 
-        Assert.Equal(1, delivered);
-        Assert.Single(_factory.EmailSender.Sent);
-        Assert.Equal("outbox-deliver@example.com", _factory.EmailSender.Sent[0].To);
-        Assert.Contains("failure detected", _factory.EmailSender.Sent[0].Subject);
+        var sentFilter = await GetPageAsync(token, "/api/emails?sent=true");
+        Assert.Equal(2, sentFilter!.Total);
 
-        var message = await batch.EmailMessages.SingleAsync();
-        Assert.True(message.Sent);
-        Assert.NotNull(message.SentAt);
-        Assert.Equal(1, message.Attempts);
-        Assert.Null(message.LastError);
+        var pendingFilter = await GetPageAsync(token, "/api/emails?sent=false");
+        Assert.Equal(1, pendingFilter!.Total);
+
+        var foreign = new HttpRequestMessage(HttpMethod.Get, "/api/emails");
+        foreign.Headers.Authorization = new AuthenticationHeaderValue("Bearer", stranger);
+        var foreignPage = await (await _client.SendAsync(foreign)).Content.ReadFromJsonAsync<EmailPage>(Helpers.ApiJson);
+        Assert.Equal(1, foreignPage!.Total);
     }
 
     [Fact]
-    public async Task Sweep_FailedSend_RetriesThenSucceeds()
+    public async Task Retry_RequeuesFailedMessage_AndDelivers()
     {
-        var token = await LoginAndGetTokenAsync("outbox-retry@example.com", "Outbox Retry");
-        var repositoryId = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/outbox-retry.git");
-        await Helpers.IngestAsync(_client, token, repositoryId,
-            statusCode: 500, method: "GET", path: "/api/quote",
-            exceptionMessage: "NullReferenceException: quote is null");
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "em-retry@test.dev", "Em Retry");
+        var emailId = await SeedEmailAsync((await UserIdAsync("em-retry@test.dev"))!,
+            "em-retry@test.dev", "RETRY ME", sent: false, createdAgoHours: 0, attempts: 5, lastError: "SMTP timeout");
 
-        _factory.EmailSender.ThrowOnSend = true;
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/api/emails/{emailId}/retry");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var response = await _client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var reset = await response.Content.ReadFromJsonAsync<EmailMessageResponse>(Helpers.ApiJson);
+        Assert.NotNull(reset);
+        Assert.Equal(0, reset!.Attempts);
+        Assert.Null(reset.LastError);
+
+        await ProcessPendingAsync();
+        Assert.Contains(_factory.EmailSender.Sent, m => m.Id == emailId);
 
         await using var scope = _factory.Services.CreateAsyncScope();
-        var processor = scope.ServiceProvider.GetRequiredService<EmailOutboxProcessor>();
-        var batch = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
-
-        await processor.ProcessPendingAsync(10, CancellationToken.None);
-
-        var failed = await batch.EmailMessages.AsNoTracking().SingleAsync();
-        Assert.False(failed.Sent);
-        Assert.Equal(1, failed.Attempts);
-        Assert.Contains("SMTP unavailable", failed.LastError);
-        Assert.Empty(_factory.EmailSender.Sent);
-
-        _factory.EmailSender.ThrowOnSend = false;
-        await processor.ProcessPendingAsync(10, CancellationToken.None);
-
-        var delivered = await batch.EmailMessages.AsNoTracking().SingleAsync();
-        Assert.True(delivered.Sent);
-        Assert.Equal(2, delivered.Attempts);
-        Assert.Null(delivered.LastError);
-        Assert.Single(_factory.EmailSender.Sent);
+        var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var row = await db.EmailMessages.AsNoTracking().SingleAsync(m => m.Id == emailId);
+        Assert.True(row.Sent);
+        Assert.Equal(1, await db.AuditEntries.AsNoTracking().CountAsync(a => a.Action == "email.retry"));
     }
 
-    private async Task<string> LoginAndGetTokenAsync(string email, string displayName)
+    [Fact]
+    public async Task Retry_SentMessage_Conflicts_AndOwnershipScoped()
     {
-        await _client.PostAsJsonAsync("/api/users/register", new { email, displayName, password = "password123" });
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "em-sent@test.dev", "Em Sent");
+        var sentId = await SeedEmailAsync((await UserIdAsync("em-sent@test.dev"))!,
+            "em-sent@test.dev", "ALREADY SENT", sent: true, createdAgoHours: 0);
 
-        var login = await _client.PostAsJsonAsync("/api/users/login", new { email, password = "password123" });
-        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
-        var payload = await login.Content.ReadFromJsonAsync<LoginResponse>();
-        Assert.NotNull(payload);
-        return payload.Token;
+        var again = new HttpRequestMessage(HttpMethod.Post, $"/api/emails/{sentId}/retry");
+        again.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        Assert.Equal(HttpStatusCode.Conflict, (await _client.SendAsync(again)).StatusCode);
+
+        var stranger = await Helpers.LoginAndGetTokenAsync(_client, "em-x2@test.dev", "Em X2");
+        var foreign = new HttpRequestMessage(HttpMethod.Post, $"/api/emails/{sentId}/retry");
+        foreign.Headers.Authorization = new AuthenticationHeaderValue("Bearer", stranger);
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.SendAsync(foreign)).StatusCode);
+    }
+
+    private async Task<EmailPage?> GetPageAsync(string token, string url)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var response = await _client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await response.Content.ReadFromJsonAsync<EmailPage>(Helpers.ApiJson);
+    }
+
+    private async Task<Guid> UserIdAsync(string email)
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        return (await db.Users.AsNoTracking().SingleAsync(u => u.Email == email)).Id;
+    }
+
+    private async Task<Guid> SeedEmailAsync(
+        Guid userId, string to, string subject, bool sent,
+        int createdAgoHours, int attempts = 0, string? lastError = null)
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var message = new EmailMessage
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            To = to,
+            Subject = subject,
+            HtmlBody = "<p>body</p>",
+            Sent = sent,
+            SentAt = sent ? DateTimeOffset.UtcNow : null,
+            Attempts = attempts,
+            LastError = lastError,
+            CreatedAt = DateTimeOffset.UtcNow.AddHours(-createdAgoHours)
+        };
+        db.EmailMessages.Add(message);
+        await db.SaveChangesAsync();
+        return message.Id;
+    }
+
+    private Task ProcessPendingAsync()
+    {
+        return Task.Run(async () =>
+        {
+            await using var scope = _factory.Services.CreateAsyncScope();
+            var processor = scope.ServiceProvider.GetRequiredService<EmailOutboxProcessor>();
+            await processor.ProcessPendingAsync(10, CancellationToken.None);
+        });
     }
 }

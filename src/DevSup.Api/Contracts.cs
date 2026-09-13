@@ -169,3 +169,19 @@ public sealed record NotificationPreferenceResponse(
     bool EmailEnabled,
     List<string> MutedEvents,
     DateTimeOffset UpdatedAt);
+
+public sealed record EmailMessageResponse(
+    Guid Id,
+    string To,
+    string Subject,
+    bool Sent,
+    DateTimeOffset? SentAt,
+    int Attempts,
+    string? LastError,
+    DateTimeOffset CreatedAt);
+
+public sealed record EmailPage(
+    IReadOnlyList<EmailMessageResponse> Items,
+    int Page,
+    int PageSize,
+    int Total);

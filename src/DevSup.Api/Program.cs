@@ -15,6 +15,7 @@ using DevSup.Core;
 using DevSup.Core.Models;
 using DevSup.Core.Services;
 using DevSup.Infrastructure.Persistence;
+using DevSup.Infrastructure.Digest;
 using DevSup.Infrastructure.Email;
 using DevSup.Infrastructure.HealthChecks;
 using DevSup.Infrastructure.Retention;
@@ -65,6 +66,16 @@ builder.Services.AddScoped<EmailOutboxProcessor>(sp => new EmailOutboxProcessor(
     sp.GetRequiredService<ILogger<EmailOutboxProcessor>>(),
     emailOptions.MaxAttempts));
 builder.Services.AddHostedService<EmailOutboxWorker>();
+
+var digestOptions = new DigestOptions
+{
+    Enabled = !string.Equals(builder.Configuration["Digests:Enabled"], "false", StringComparison.OrdinalIgnoreCase),
+    IntervalHours = int.TryParse(builder.Configuration["Digests:IntervalHours"], out var digestHours) && digestHours >= 1 ? digestHours : 24,
+    MaxOpenTickets = int.TryParse(builder.Configuration["Digests:MaxOpenTickets"], out var digestMax) && digestMax >= 1 ? digestMax : 10
+};
+builder.Services.AddSingleton(digestOptions);
+builder.Services.AddScoped<DigestProcessor>();
+builder.Services.AddHostedService<DigestWorker>();
 
 var webhookOptions = new WebhookWorkerOptions
 {
@@ -1387,6 +1398,56 @@ app.MapPut("/api/notification-preferences", async (NotificationPreferenceRequest
     var mutedList = Enumerable.Range(0, 8).Where(i => (existing.MutedEmailEvents & (1 << i)) != 0)
         .Select(i => ((WebhookEvent)i).ToString()).ToList();
     return Results.Ok(new NotificationPreferenceResponse(existing.RepositoryId, repo.CloneUrl, existing.EmailEnabled, mutedList, existing.UpdatedAt));
+}).RequireAuthorization();
+
+app.MapGet("/api/emails", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct,
+    int page = 1, int pageSize = 20, bool? sent = null) =>
+{
+    var ownerId = user.GetUserId();
+    page = Math.Max(1, page);
+    pageSize = Math.Clamp(pageSize, 1, 100);
+
+    var query = db.EmailMessages.AsNoTracking().Where(m => m.UserId == ownerId);
+    if (sent.HasValue)
+    {
+        query = query.Where(m => m.Sent == sent.Value);
+    }
+
+    var total = await query.CountAsync(ct);
+    var rows = await query.OrderByDescending(m => m.CreatedAt)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .Select(m => new EmailMessageResponse(m.Id, m.To, m.Subject, m.Sent, m.SentAt, m.Attempts, m.LastError, m.CreatedAt))
+        .ToListAsync(ct);
+
+    return Results.Ok(new EmailPage(rows, page, pageSize, total));
+}).RequireAuthorization();
+
+app.MapPost("/api/emails/{id:guid}/retry", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var message = await db.EmailMessages.FirstOrDefaultAsync(m => m.Id == id && m.UserId == ownerId, ct);
+    if (message is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (message.Sent)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "This email was already sent.");
+    }
+
+    db.Entry(message).Property(m => m.Attempts).CurrentValue = 0;
+    db.Entry(message).Property(m => m.LastError).CurrentValue = null;
+    await db.SaveChangesAsync(ct);
+
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == ownerId, ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "email.retry", "EmailMessage",
+        message.Id.ToString(), before: message.LastError, ct: ct);
+
+    return Results.Ok(new EmailMessageResponse(message.Id, message.To, message.Subject,
+        message.Sent, message.SentAt, message.Attempts, message.LastError, message.CreatedAt));
 }).RequireAuthorization();
 
 app.Run();
