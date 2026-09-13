@@ -5,12 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.17** — the **teams & shared repositories** release. Owners can
-> invite teammates onto a repository (`POST /api/repositories/{id}/members`, role
-> `observer` or `operator`), list them, and revoke access — a **Members** panel in the
-> dashboard manages it with an invite form and one-click revoke. Shared members see the
-> repository across the overview, tickets, failures, preferences and daily digest, while
-> ingest and repair pick-up stay owner-only. 178 tests passing.
+> Project status: **v0.18** — the **role enforcement & collaborative notifications**
+> release. Shared-repository roles now mean something: **operators** triage (close,
+> reopen, re-dispatch) and are copied on incident emails, while **observers** are
+> read-only and quiet. The ticket-detail API reports `canTriage` so the dashboard only
+> shows actions you're allowed to take. 186 tests passing.
 
 ---
 
@@ -322,6 +321,22 @@ triaging a ticket still uses their own identity and the repo's real owner is the
 notified). The audit trail records `repository.share` / `repository.unshare` with the
 invited email and role.
 
+### Role enforcement & collaborative notifications (v0.18)
+
+Roles are **enforced at the API boundary**, not just stored. Read access is universal
+across a shared repository, but triage writes are gated: `POST
+/api/tickets/{id}/close`, `/reopen`, and `/redispatch` succeed for the owner **or
+operator members** and return `403` for **observers**. The ticket-detail response
+carries `canTriage: true/false` so the dashboard only renders **Close ticket** /
+**Reopen ticket** actions the caller is allowed to perform.
+
+Collaboration means being kept in the loop. **Operator members are copied on incident
+emails**: failure-detected and not-a-code-error notices (the ingest and replay fan-out)
+plus fix-pushed / pull-request-opened / needs-review messages from the repair agent —
+each member's copy rides their own `emailEnabled` / `mutedEvents` notification
+preferences. Observers stay quiet, and webhook fan-out remains scoped to the owner's
+endpoints.
+
 ## 10. Platform admin & data retention
 
 ### Platform admin (multi-tenant)
@@ -553,7 +568,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/tickets?repositoryId=` | Bearer | Filter tickets to one repository |
 | `POST` | `/api/failures/{failureId}/replay` | Bearer | Re-send email + webhook notifications for a past failure |
 | `POST` | `/api/tickets/{ticketId}/redispatch` | Bearer | Return a new/needs-review ticket to the repair queue |
-| `GET` | `/api/tickets/{ticketId}` | Bearer | Full incident detail for one ticket |
+| `GET` | `/api/tickets/{ticketId}` | Bearer | Full incident detail for one ticket (incl. `canTriage`) |
 | `POST` | `/api/tickets/{ticketId}/close` | Bearer | Mark a ticket closed (audited) |
 | `POST` | `/api/tickets/{ticketId}/reopen` | Bearer | Reopen a closed ticket into the repair queue (audited) |
 | `GET` | `/api/failures` | Bearer | Paginated failure history joined to tickets (`repositoryId`, `from`, `to`, `status`, `page`, `pageSize`) |
@@ -621,6 +636,7 @@ push/PR to `master`.
 - **v0.15** *(done)* — incident triage & account controls: ticket detail + close/reopen API (audited), dashboard incident view with triage actions, Account panel with daily-digest toggle
 - **v0.16** *(done)* — monitoring controls: pause/unpause repositories (health checks, ingest, repair skip; migration `AddRepositoryPaused`), webhook activate/deactivate API + dashboard Pause/Resume buttons per repo and webhook
 - **v0.17** *(done)* — teams & shared repositories: owners invite/revoke members by role, shared members see the repo across overview/tickets/failures/preferences/digest while ingest + repair stay owner-only; dashboard Members panel (invite form + revoke), migration `AddRepositoryMembers`
+- **v0.18** *(done)* — role enforcement & collaborative notifications: operator members triage (close/reopen/redispatch) while observers get `403`; ticket detail reports `canTriage` and the dashboard hides triage actions accordingly; operator members are copied on incident + fix-status emails (per their own notification preferences)
 
 ---
 
