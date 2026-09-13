@@ -5,11 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.31** — the **notification-preference portability** release.
-> `GET /api/notification-preferences/export` downloads your per-repository email
-> preferences as CSV and `POST /api/notification-preferences/import` upserts them in
-> bulk (unknown/inaccessible rows skipped and reported). The dashboard Preferences
-> panel gains Export/Import CSV controls. 247 tests passing.
+> Project status: **v0.32** — the **quiet hours** release. Per-repository quiet hours
+> (`quietHoursStart` / `quietHoursEnd`, UTC, wrap-around aware) hold incident emails in
+> the outbox (`NotBefore`) and deliver them once the window ends — webhooks still fire
+> on time. Configurable via `PUT /api/notification-preferences`, CSV import/export, and
+> the dashboard Preferences panel. 250 tests passing.
 
 ---
 
@@ -293,6 +293,14 @@ CSV (raw body) to upsert in bulk — handy for restoring a fleet or applying one
 policy to another account. Rows naming an unknown event or a repository you can't access
 are skipped and reported in the response (`updated` / `skipped` / `errors`); the
 dashboard panel has matching **Export CSV** / **Import CSV** controls.
+
+Since v0.32 each repository can declare **quiet hours** (`quietHoursStart` /
+`quietHoursEnd`, UTC hours 0–23; a window may wrap midnight). During the window,
+incident emails (failure detected, not-a-code-error, fix pushed/pending-review,
+needs-review, fix-verified and health-check failures) are **held, not dropped**: the
+outbox stamps `NotBefore` on the message and delivers it once the window ends. Webhook
+deliveries are unaffected — your Slack/Teams channel still gets paged at 03:00. Set
+both hours (or neither); a single hour is rejected with `400`.
 
 ## 8. Webhooks, channels & health checks
 
@@ -664,17 +672,17 @@ devsup/
 - `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
 - `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA, last agent error, optional PR/MR URL
-- `EmailMessages` — outbox (to, subject, html body, sent, created at)
+- `EmailMessages` — outbox (to, subject, html body, sent, created at, optional `NotBefore` hold for quiet hours)
 - `WebhookEndpoints` — user, destination URL, channel (`http`/`slack`/`teams`), event mask, **encrypted signing secret**, repository scope (`RepositoryIds`), active
 - `WebhookDeliveries` — outbox (webhook, event, payload, attempts, last error, sent)
 - `AuditEntries` — write-audit trail (actor, action, entity, before/after, IP, timestamp)
-- `NotificationPreferences` — per-user, per-repository email delivery preferences (`EmailEnabled` master switch + per-event `MutedEmailEvents` bitmask)
+- `NotificationPreferences` — per-user, per-repository email delivery preferences (`EmailEnabled` master switch + per-event `MutedEmailEvents` bitmask + optional `QuietHoursStart`/`QuietHoursEnd` UTC window)
 
 Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`, `AddRepositoryRetention`, `AddWebhookRepositoryScope`, `AddUserDigestUnsubscribeToken`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`, `AddRepositoryRetention`, `AddWebhookRepositoryScope`, `AddUserDigestUnsubscribeToken`, `AddQuietHoursAndEmailNotBefore`).
 
 ### The repair agent (v0.4)
 
@@ -862,6 +870,7 @@ push/PR to `master`.
 - **v0.29** *(done)* — fleet CSV export: `GET /api/admin/repositories/export` streams the filtered cross-tenant fleet view as CSV, with an Export CSV button in the dashboard Fleet health panel
 - **v0.30** *(done)* — digest unsubscribe: per-user `DigestUnsubscribeToken` embedded as a one-click link in digest emails; anonymous `GET /api/digest/unsubscribe` disables the digest and burns the token (audited `account.digestUnsubscribe`); `Digests:BaseUrl` config; migration `AddUserDigestUnsubscribeToken`
 - **v0.31** *(done)* — notification-preference portability: CSV `export`/`import` endpoints for per-repository email preferences (bulk upsert, unknown/inaccessible rows skipped + reported), dashboard Export/Import CSV controls
+- **v0.32** *(done)* — quiet hours: per-repository `quietHoursStart`/`quietHoursEnd` (UTC, wrap-around aware) hold incident emails via `EmailMessage.NotBefore` and deliver after the window; webhooks unaffected; API, CSV import/export, dashboard inputs; migration `AddQuietHoursAndEmailNotBefore`
 
 ---
 
