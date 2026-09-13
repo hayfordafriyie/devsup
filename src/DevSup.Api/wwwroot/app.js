@@ -205,9 +205,10 @@
         document.getElementById("ticket-detail-title").textContent = "#" + detail.id.slice(0, 8);
 
         var detailEl = document.getElementById("ticket-detail-body");
-        var closeButton = detail.status && detail.status === "closed" ? "" :
-            '<button data-ticket-close="' + detail.id + '">Close ticket</button>';
-        var reopenButton = detail.status === "closed" ?
+        var canTriage = detail.canTriage !== false;
+        var closeButton = canTriage && detail.status && detail.status !== "closed" ?
+            '<button data-ticket-close="' + detail.id + '">Close ticket</button>' : "";
+        var reopenButton = canTriage && detail.status === "closed" ?
             '<button data-ticket-reopen="' + detail.id + '">Reopen ticket</button>' : "";
         var exception = detail.exceptionMessage
             ? '<pre class="detail-pre">' + escapeHtml(detail.exceptionMessage) + "</pre>"

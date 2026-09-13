@@ -237,6 +237,28 @@ app.UseStaticFiles(new StaticFileOptions
     FileProvider = new PhysicalFileProvider(Path.Combine(app.Environment.ContentRootPath, "wwwroot"))
 });
 
+// Returns null when the caller may act on a repository (owner or operator member),
+// or an IResult (404/403) to return immediately.
+static async Task<IResult?> CheckTriagePermissionAsync(DevSupDbContext db, Guid repositoryId, Guid userId, CancellationToken ct)
+{
+    var isOwner = await db.ConnectedRepositories.AsNoTracking()
+        .AnyAsync(r => r.Id == repositoryId && r.OwnerUserId == userId, ct);
+    if (isOwner) return null;
+
+    var membership = await db.RepositoryMembers.AsNoTracking()
+        .FirstOrDefaultAsync(m => m.RepositoryId == repositoryId && m.UserId == userId, ct);
+    if (membership is null)
+    {
+        return Results.NotFound();
+    }
+    if (membership.Role == MemberRole.Observer)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status403Forbidden,
+            detail: "Only the repository owner or operator members can perform this action.");
+    }
+    return null;
+}
+
 app.MapGet("/", () => Results.Ok(new { service = "DevSup", status = "ok" }));
 
 app.MapPost("/api/users/register", async (RegisterUserRequest request, DevSupDbContext db, IPasswordHasherService hasher, CancellationToken ct) =>
@@ -964,7 +986,7 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest http
     var owner = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == ownerId, ct);
     if (owner is not null)
     {
-        FailureReporter.Notify(db, owner, repository, failure, ticket, category);
+        await FailureReporter.Notify(db, owner, repository, failure, ticket, category, ct: ct);
     }
 
     await db.SaveChangesAsync(ct);
@@ -998,7 +1020,7 @@ app.MapPost("/api/failures/{failureId:guid}/replay", async (Guid failureId, Clai
             detail: "Failure is missing its repository, ticket, or owner.");
     }
 
-    FailureReporter.Notify(db, owner, repository, failure, ticket, ticket.Category, replay: true);
+    await FailureReporter.Notify(db, owner, repository, failure, ticket, ticket.Category, replay: true, ct: ct);
 
     var emailsQueued = db.ChangeTracker.Entries<EmailMessage>().Count();
     var webhooksQueued = db.ChangeTracker.Entries<WebhookDelivery>().Count();
@@ -1024,6 +1046,12 @@ app.MapPost("/api/tickets/{ticketId:guid}/redispatch", async (Guid ticketId, Cla
     {
         return Results.Problem(statusCode: StatusCodes.Status409Conflict,
             detail: "Only new or needs-human-review tickets can be re-dispatched.");
+    }
+
+    var redispatchDeny = await CheckTriagePermissionAsync(db, ticket.RepositoryId, ownerId, ct);
+    if (redispatchDeny is not null)
+    {
+        return redispatchDeny;
     }
 
     var now = DateTimeOffset.UtcNow;
@@ -1082,11 +1110,14 @@ where t.Id == ticketId
         return Results.NotFound();
     }
 
+    var canTriage = (await CheckTriagePermissionAsync(db, ticket.Ticket.RepositoryId, ownerId, ct)) is null;
+
     var row = ticket; // row = { Ticket, Failure }
     return Results.Ok(new TicketDetailResponse(
         row.Ticket.Id, row.Ticket.FailureEventId, row.Ticket.RepositoryId, row.Ticket.Category.ToString(), row.Ticket.Kind.ToString(),
         row.Ticket.Status.ToString(), row.Ticket.Analysis, row.Ticket.PatchSummary, row.Ticket.CommitSha, row.Ticket.PullRequestUrl, row.Ticket.LastError,
-        row.Ticket.UpdatedAt, row.Failure.Method, row.Failure.Path, row.Failure.StatusCode, row.Failure.ExceptionMessage, row.Failure.OccurredAt));
+        row.Ticket.UpdatedAt, row.Failure.Method, row.Failure.Path, row.Failure.StatusCode, row.Failure.ExceptionMessage, row.Failure.OccurredAt,
+        CanTriage: canTriage));
 }).RequireAuthorization();
 
 app.MapPost("/api/tickets/{ticketId:guid}/close", async (Guid ticketId, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
@@ -1105,6 +1136,12 @@ app.MapPost("/api/tickets/{ticketId:guid}/close", async (Guid ticketId, ClaimsPr
     if (ticket.Status == TicketStatus.Closed)
     {
         return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "The ticket is already closed.");
+    }
+
+    var closeDeny = await CheckTriagePermissionAsync(db, ticket.RepositoryId, ownerId, ct);
+    if (closeDeny is not null)
+    {
+        return closeDeny;
     }
 
     var before = ticket.Status.ToString();
@@ -1134,6 +1171,12 @@ app.MapPost("/api/tickets/{ticketId:guid}/reopen", async (Guid ticketId, ClaimsP
     if (ticket.Status != TicketStatus.Closed)
     {
         return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Only closed tickets can be reopened.");
+    }
+
+    var reopenDeny = await CheckTriagePermissionAsync(db, ticket.RepositoryId, ownerId, ct);
+    if (reopenDeny is not null)
+    {
+        return reopenDeny;
     }
 
     var before = ticket.Status.ToString();

@@ -76,7 +76,8 @@ public sealed record TicketDetailResponse(
     string Path,
     int StatusCode,
     string? ExceptionMessage,
-    DateTimeOffset OccurredAt);
+    DateTimeOffset OccurredAt,
+    bool CanTriage = false);
 
 public sealed record AddRepositoryMemberRequest(string Email, string Role = "operator");
 

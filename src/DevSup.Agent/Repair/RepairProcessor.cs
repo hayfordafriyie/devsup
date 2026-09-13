@@ -342,6 +342,34 @@ public sealed class RepairProcessor(
             });
         }
 
+        // Operator members are copied on ticket-status emails (theirs via their own
+        // preferences); webhooks stay scoped to the owner's endpoints.
+        var operatorMemberIds = await db.RepositoryMembers.AsNoTracking()
+            .Where(m => m.RepositoryId == repository.Id && m.Role == MemberRole.Operator)
+            .Select(m => m.UserId)
+            .ToListAsync(ct);
+        if (operatorMemberIds.Count > 0)
+        {
+            var members = await db.Users.AsNoTracking()
+                .Where(u => operatorMemberIds.Contains(u.Id))
+                .ToListAsync(ct);
+            foreach (var member in members)
+            {
+                if (NotificationPreferencePolicy.ShouldSendEmail(db, member.Id, repository.Id, webhookEvent))
+                {
+                    db.EmailMessages.Add(new EmailMessage
+                    {
+                        Id = Guid.NewGuid(),
+                        UserId = member.Id,
+                        To = member.Email,
+                        Subject = subject,
+                        HtmlBody = body,
+                        CreatedAt = DateTimeOffset.UtcNow
+                    });
+                }
+            }
+        }
+
         WebhookQueue.Enqueue(db, owner.Id, webhookEvent, new
         {
             Event = webhookEvent,
