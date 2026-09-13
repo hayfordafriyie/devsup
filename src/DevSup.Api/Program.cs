@@ -7,6 +7,7 @@ using DevSup.Agent.PullRequests;
 using DevSup.Agent.Repair;
 using DevSup.Api;
 using DevSup.Api.Auth;
+using DevSup.Api.Notifications;
 using DevSup.Core;
 using DevSup.Core.Models;
 using DevSup.Core.Services;
@@ -662,41 +663,74 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest http
     var owner = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == ownerId, ct);
     if (owner is not null)
     {
-        var notCodeError = category == FailureCategory.NotCodeError;
-        db.EmailMessages.Add(new EmailMessage
-        {
-            Id = Guid.NewGuid(),
-            UserId = owner.Id,
-            To = owner.Email,
-            Subject = notCodeError
-                ? $"DevSup: not a code error on {failure.Method} {failure.Path}"
-                : $"DevSup: failure detected on {failure.Method} {failure.Path}",
-            HtmlBody = notCodeError
-                ? $"<p>DevSup detected a <strong>{kind}</strong> failure on <code>{failure.Method} {failure.Path}</code> " +
-                  $"(HTTP {failure.StatusCode}).</p>" +
-                  $"<p>This was classified as <em>not a code error</em>, so the repair agent will <strong>not</strong> " +
-                  $"attempt a code fix and no patch is scheduled. Review the credentials, client, rate limits, or " +
-                  $"downstream services instead.</p>"
-                : $"<p>DevSup detected a failure on <code>{failure.Method} {failure.Path}</code> " +
-                  $"with status <strong>{failure.StatusCode}</strong>.</p>" +
-                  $"<p>Classification: <strong>{kind}</strong> ({category}).</p>" +
-                  $"<p>Next step: ticket <strong>{ticket.Status}</strong> — the agent will investigate code errors.</p>",
-            CreatedAt = DateTimeOffset.UtcNow
-        });
-
-        var webhookEvent = notCodeError ? WebhookEvent.NotCodeError : WebhookEvent.FailureDetected;
-        WebhookQueue.Enqueue(db, owner.Id, webhookEvent, new
-        {
-            failure = new { failure.Method, failure.Path, failure.StatusCode, FailureId = failure.Id },
-            repository = new { repository.Id, repository.CloneUrl, repository.DefaultBranch },
-            ticket = new { ticket.Id, Status = ticket.Status, Kind = ticket.Kind }
-        });
+        FailureReporter.Notify(db, owner, repository, failure, ticket, category);
     }
 
     await db.SaveChangesAsync(ct);
 
     return Results.Created($"/api/tickets/{ticket.Id}",
         new IngestResponse(failure.Id, ticket.Id, category.ToString(), kind.ToString(), status.ToString()));
+}).RequireAuthorization();
+
+app.MapPost("/api/failures/{failureId:guid}/replay", async (Guid failureId, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+
+    var failure = await db.FailureEvents.AsNoTracking()
+        .FirstOrDefaultAsync(f => f.Id == failureId
+            && db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId && r.OwnerUserId == ownerId), ct);
+
+    if (failure is null)
+    {
+        return Results.NotFound();
+    }
+
+    var repository = await db.ConnectedRepositories.AsNoTracking()
+        .FirstOrDefaultAsync(r => r.Id == failure.RepositoryId && r.OwnerUserId == ownerId, ct);
+    var ticket = await db.RepairTickets.AsNoTracking()
+        .FirstOrDefaultAsync(t => t.FailureEventId == failure.Id, ct);
+    var owner = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == ownerId, ct);
+
+    if (repository is null || ticket is null || owner is null)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status500InternalServerError,
+            detail: "Failure is missing its repository, ticket, or owner.");
+    }
+
+    FailureReporter.Notify(db, owner, repository, failure, ticket, ticket.Category, replay: true);
+
+    var emailsQueued = db.ChangeTracker.Entries<EmailMessage>().Count();
+    var webhooksQueued = db.ChangeTracker.Entries<WebhookDelivery>().Count();
+    await db.SaveChangesAsync(ct);
+
+    return Results.Accepted(null, new { failureId = failure.Id, emailsQueued, webhooksQueued });
+}).RequireAuthorization();
+
+app.MapPost("/api/tickets/{ticketId:guid}/redispatch", async (Guid ticketId, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+
+    var ticket = await db.RepairTickets
+        .FirstOrDefaultAsync(t => t.Id == ticketId
+            && db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == ownerId), ct);
+
+    if (ticket is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (ticket.Status is not (TicketStatus.New or TicketStatus.NeedsHumanReview))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict,
+            detail: "Only new or needs-human-review tickets can be re-dispatched.");
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    db.Entry(ticket).Property(t => t.Status).CurrentValue = TicketStatus.New;
+    db.Entry(ticket).Property(t => t.UpdatedAt).CurrentValue = now;
+    await db.SaveChangesAsync(ct);
+
+    return Results.Accepted(null, new { ticketId = ticket.Id, status = "new" });
 }).RequireAuthorization();
 
 app.MapGet("/api/tickets", async (Guid? repositoryId, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
