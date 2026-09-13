@@ -5,11 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.23** — the **reporting** release. Daily digests now split activity
-> into **Your repositories** and **Shared with you** sections, and the repository
-> activity feed gains a CSV export
-> (`GET /api/repositories/{id}/activity/export`), downloadable from the dashboard's
-> Activity panel. 217 tests passing.
+> Project status: **v0.24** — the **digest cadence** release. Each user now chooses a
+> **daily** or **weekly** digest (`digestFrequency` on `PUT /api/account`); the worker
+> tracks `LastDigestSentAt` and widens the reporting window to the chosen cadence, so a
+> weekly digest covers seven days. The dashboard Account panel exposes a cadence
+> selector. 222 tests passing.
 
 ---
 
@@ -148,8 +148,9 @@ providers later). Failed sends are retried, never silently dropped.
 ### Accounts & passwords (v0.12)
 
 Self-service is self-service with a paper trail. `GET /api/account` returns your profile
-(email, display name, admin/active flags, digest opt-out state, created at); `PUT
-/api/account` updates your display name and optionally toggles `digestEnabled`; `POST
+(email, display name, admin/active flags, digest opt-out state, digest cadence, created
+at); `PUT /api/account` updates your display name and optionally toggles
+`digestEnabled` and/or sets `digestFrequency` (`"daily"` / `"weekly"`); `POST
 /api/account/password` verifies the current password and sets a new
 one (min 8 characters). Both write operations are persisted to the audit trail
 (`account.profileUpdate`, `account.passwordChange`).
@@ -170,7 +171,11 @@ The email outbox is no longer a black box:
   `PUT /api/account` with `digestEnabled: false` silences the daily summary while
   leaving transactional incident emails untouched. Since v0.23 a digest that includes
   shared repositories splits its counts into **Your repositories** and **Shared with
-  you** sections, so it's clear where the activity came from.
+  you** sections, so it's clear where the activity came from. Since v0.24 each user
+  picks a **cadence** — `digestFrequency: "daily"` (24 h) or `"weekly"` (168 h). The
+  worker tracks `LastDigestSentAt` per user, skips anyone whose interval hasn't
+  elapsed, and widens the reporting window to match the cadence (a weekly digest looks
+  back seven days).
 
 The dashboard **Delivery center** renders the email outbox with one-click retry, and a
 `Ping` button per webhook endpoint fires a signed `devsup.ping`.
@@ -526,7 +531,7 @@ devsup/
 
 ## 14. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
 
-- `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, created timestamp
+- `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, digest opt-out (`DigestEnabled`) + cadence (`DigestFrequency`, `LastDigestSentAt`), created timestamp
 - `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`), pause state (`Paused`, `PausedAt`), archive state (`Archived`, `ArchivedAt`)
 - `RepositoryMembers` — cross-tenant shares (repository + user composite key, role `observer`/`operator`, created at)
 - `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
@@ -542,7 +547,7 @@ Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` 
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`).
 
 ### The repair agent (v0.4)
 
@@ -612,7 +617,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `POST` | `/api/users/register` | — | Create account (email, display name, password ≥ 8 chars) |
 | `POST` | `/api/users/login` | — | Exchange credentials for a JWT |
 | `GET` | `/api/account` | Bearer | View your profile (email, name, admin/active flags) |
-| `PUT` | `/api/account` | Bearer | Update your display name |
+| `PUT` | `/api/account` | Bearer | Update your display name and/or digest settings (`digestEnabled`, `digestFrequency`) |
 | `POST` | `/api/account/password` | Bearer | Change your password (current password required) |
 | `GET` | `/api/auth/github/login` | — | Start GitHub OAuth (redirects to GitHub) |
 | `GET` | `/api/auth/github/callback` | — | GitHub OAuth callback → links account, returns JWT |
@@ -715,6 +720,7 @@ push/PR to `master`.
 - **v0.21** *(done)* — repository activity feed: `GET /api/repositories/{id}/activity` returns a repo-scoped audit timeline (lifecycle, member changes, ticket triage) with actor/before/after/timestamp, readable by owners and shared members and strictly isolated per repository; dashboard Activity panel
 - **v0.22** *(done)* — bulk repository actions: `POST /api/repositories/bulk` applies pause/unpause/archive/unarchive to up to 100 owned repos with per-repo results (ok/unchanged/forbidden/notFound) and per-repo audits; dashboard selection checkboxes + bulk action bar
 - **v0.23** *(done)* — reporting: daily digests group activity into "Your repositories" vs "Shared with you" sections; repository activity feed gains a CSV export (`GET /api/repositories/{id}/activity/export`) with a dashboard Export CSV button
+- **v0.24** *(done)* — digest cadence: per-user `digestFrequency` (daily/weekly) with `LastDigestSentAt` tracking; the worker skips users whose interval hasn't elapsed and widens the window to the cadence (weekly = 7 days); dashboard Account panel cadence selector; migration `AddUserDigestFrequency`
 
 ---
 
