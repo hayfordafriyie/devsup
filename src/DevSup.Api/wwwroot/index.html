@@ -56,7 +56,13 @@
             <h2>Webhook endpoints</h2>
             <ul id="webhooks"></ul>
             <form id="webhook-form">
+                <input id="webhook-name" type="text" maxlength="128" placeholder="Name (optional)" autocomplete="off" />
                 <input id="webhook-url" type="url" placeholder="https://hooks.example.com/devsup" />
+                <select id="webhook-channel">
+                    <option value="http">HTTP</option>
+                    <option value="slack">Slack</option>
+                    <option value="teams">Microsoft Teams</option>
+                </select>
                 <button type="submit">Add webhook</button>
             </form>
         </section>

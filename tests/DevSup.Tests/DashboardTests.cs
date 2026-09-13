@@ -36,4 +36,21 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, css.StatusCode);
         Assert.Contains("css", css.Content.Headers.ContentType!.ToString());
     }
+
+    [Fact]
+    public async Task Dashboard_WebhookFormSupportsRouting()
+    {
+        using var client = _factory.CreateClient();
+
+        var html = await (await client.GetAsync("/dashboard/")).Content.ReadAsStringAsync();
+        Assert.Contains("webhook-channel", html);
+        Assert.Contains("option value=\"slack\"", html);
+        Assert.Contains("option value=\"teams\"", html);
+        Assert.Contains("webhook-name", html);
+
+        var js = await (await client.GetAsync("/dashboard/app.js")).Content.ReadAsStringAsync();
+        Assert.Contains("channelBadge", js);
+        Assert.Contains("w.channel", js);
+        Assert.Contains("channel: channelSelect.value", js);
+    }
 }

@@ -139,6 +139,11 @@
         section.hidden = false;
     }
 
+    function channelBadge(channel) {
+        var labels = { http: "HTTP", slack: "Slack", teams: "Teams" };
+        return '<span class="channel">' + (labels[channel] || escapeHtml(channel)) + "</span>";
+    }
+
     function renderWebhooks(webhooks) {
         var section = document.getElementById("webhooks-section");
         var list = document.getElementById("webhooks");
@@ -146,8 +151,13 @@
             list.innerHTML = '<li class="muted">No webhook endpoints.</li>';
         } else {
             list.innerHTML = webhooks.map(function (w) {
-                return "<li><a href=\"" + escapeHtml(w.url) + "\" target=\"_blank\" rel=\"noopener\">" + escapeHtml(w.url) + "</a>" +
-                    '<span class="muted">' + escapeHtml(w.events.join(", ")) + "</span>" +
+                var name = w.name ? '<strong>' + escapeHtml(w.name) + "</strong>" : "";
+                var events = escapeHtml(w.events.map(function (e) {
+                    return String(e).replace(/([A-Z])/g, " $1").toLowerCase();
+                }).join(", "));
+                return "<li>" + channelBadge(w.channel) + " " + name +
+                    ' <a href="' + escapeHtml(w.url) + '" target="_blank" rel="noopener">' + escapeHtml(w.url) + "</a>" +
+                    '<span class="muted">&nbsp;&middot; ' + events + "</span>" +
                     '<button data-delete="' + w.id + '">Delete</button></li>';
             }).join("");
         }
@@ -201,14 +211,24 @@
     form.addEventListener("submit", function (event) {
         event.preventDefault();
         var urlInput = document.getElementById("webhook-url");
+        var nameInput = document.getElementById("webhook-name");
+        var channelSelect = document.getElementById("webhook-channel");
         var events = ["failureDetected", "fixPendingReview", "fixPushed", "needsHumanReview", "notCodeError"];
+        var payload = {
+            url: urlInput.value.trim(),
+            events: events,
+            channel: channelSelect.value
+        };
+        var name = nameInput.value.trim();
+        if (name) payload.name = name;
         fetch("/api/webhooks", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-            body: JSON.stringify({ url: urlInput.value.trim(), events: events })
+            body: JSON.stringify(payload)
         }).then(function (response) {
             if (!response.ok) throw new Error("Failed to add webhook");
             urlInput.value = "";
+            nameInput.value = "";
             return load();
         }).catch(function (e) { showError(e.message); });
     });
