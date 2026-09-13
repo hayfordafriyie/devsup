@@ -5,12 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.20** — the **repository archiving** release. Retire a repository
-> with `POST /api/repositories/{id}/archive` and it vanishes from the repository list,
-> overview and failure/ticket feeds while every background pipeline (health, repair,
-> verification, digest) skips it; `POST /api/repositories/{id}/unarchive` restores it
-> intact. Ingest returns `409` while archived, the dashboard gains an **Archived**
-> section with one-click restore, and both transitions are audited. 203 tests passing.
+> Project status: **v0.21** — the **repository activity feed** release.
+> `GET /api/repositories/{id}/activity` gives owners and shared members a repo-scoped
+> audit timeline — lifecycle changes, member invites/revokes/transfers/leaves, and
+> ticket triage — with actor, before/after detail and timestamps, strictly isolated per
+> repository. The dashboard's **Activity** button opens it inline. 208 tests passing.
 
 ---
 
@@ -432,6 +431,18 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
 `actor`, `action`, and `entityType`. Failure ingestion is deliberately **not** audited
 to avoid noise.
 
+### Repository activity feed (v0.21)
+
+The audit trail isn't just for admins. `GET /api/repositories/{id}/activity` returns a
+repository-scoped timeline (`limit`, default 50, max 200) that any member — owner or
+shared observer/operator — can read. It gathers the repo's own lifecycle entries
+(`repository.connect` / `pause` / `unpause` / `archive` / `unarchive` / `transfer`), its
+member changes (`repository.share` / `repository.unshare` / `repository.leave`), and
+ticket triage on its incidents (`ticket.close` / `ticket.reopen`). Each item carries the
+**actor email**, action, before/after detail and timestamp, newest first. Entries are
+strictly filtered to the requested repository, so a member never sees activity from
+other repositories. The dashboard's **Activity** button opens the same timeline.
+
 ### Failure history & CSV export
 
 `GET /api/failures` returns a paginated history of your failure events joined to their
@@ -600,6 +611,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `DELETE` | `/api/repositories/{id}/members/{userId}` | Bearer | Revoke a member's access |
 | `POST` | `/api/repositories/{id}/transfer` | Bearer | Transfer ownership to an operator member (owner becomes operator) |
 | `POST` | `/api/repositories/{id}/leave` | Bearer | Leave a shared repository (members only; owners must transfer first) |
+| `GET` | `/api/repositories/{id}/activity` | Bearer | Repo-scoped activity timeline (members can read; `limit` ≤ 200) |
 | `POST` | `/api/ingest` | Bearer | Report a failure; triaged into a repair ticket |
 | `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
 | `GET` | `/api/ai-keys` | Bearer | List your AI key bindings (masked) |
@@ -680,6 +692,7 @@ push/PR to `master`.
 - **v0.18** *(done)* — role enforcement & collaborative notifications: operator members triage (close/reopen/redispatch) while observers get `403`; ticket detail reports `canTriage` and the dashboard hides triage actions accordingly; operator members are copied on incident + fix-status emails (per their own notification preferences)
 - **v0.19** *(done)* — ownership transfer & member self-service: owner hands a repo to an operator member (previous owner demoted to operator, new owner emailed), members can leave a shared repo; both audited, dashboard Transfer/Leave controls
 - **v0.20** *(done)* — repository archiving: archive retires a repo from the repository list, overview, failure/ticket feeds and all background pipelines (health, repair, verification, digest) while retaining history; ingest returns `409`, `?archived=true` lists retired repos, dashboard Archived section restores them; audited, migration `AddRepositoryArchived`
+- **v0.21** *(done)* — repository activity feed: `GET /api/repositories/{id}/activity` returns a repo-scoped audit timeline (lifecycle, member changes, ticket triage) with actor/before/after/timestamp, readable by owners and shared members and strictly isolated per repository; dashboard Activity panel
 
 ---
 
