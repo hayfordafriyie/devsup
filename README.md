@@ -5,12 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.25** — the **admin fleet health** release. Platform admins get a
-> cross-tenant repository view: `GET /api/admin/repositories` lists every repository
-> with owner, health, pause/archive flags, open tickets and failure counts (filterable
-> by health/owner/paused/archived), and `GET /api/admin/overview` now includes a health
-> breakdown. The dashboard admin console gains a **Fleet health** panel. 226 tests
-> passing.
+> Project status: **v0.26** — the **per-repository retention** release.
+> `PUT /api/repositories/{id}/retention` sets a per-repo history window — inherit the
+> global default, keep forever, or a custom number of days — with the retention worker
+> honouring each policy. Owner-only, audited, and exposed as a **Retention** control in
+> the dashboard. 232 tests passing.
 
 ---
 
@@ -509,6 +508,22 @@ Historical failure data grows forever unless pruned. A background worker
 
 Setting `Retention:WindowDays = 0` disables purging entirely.
 
+#### Per-repository overrides (v0.26)
+
+The global window is a default, not a mandate. `PUT /api/repositories/{id}/retention`
+(`{ retentionDays }`, owner-only, audited as `repository.retention`) sets a per-repo
+policy:
+
+- `null` — **inherit** the global `Retention:WindowDays`.
+- `0` — **keep forever**; this repository's failures/tickets are never purged.
+- `> 0` — **custom window**; history older than that many days is purged even if the
+  global window is longer (or shorter).
+
+The override governs that repository's `FailureEvents`/`RepairTickets`; webhook
+deliveries and sent emails remain global (they aren't repository-scoped). A negative
+value is rejected with `400`. The dashboard's repositories table exposes a
+**Retention** button per owned repository.
+
 ## 11. Audit & failure history
 
 ### Write-audit trail
@@ -615,7 +630,7 @@ devsup/
 ## 14. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
 
 - `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, digest opt-out (`DigestEnabled`) + cadence (`DigestFrequency`, `LastDigestSentAt`), created timestamp
-- `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`), pause state (`Paused`, `PausedAt`), archive state (`Archived`, `ArchivedAt`)
+- `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`), pause state (`Paused`, `PausedAt`), archive state (`Archived`, `ArchivedAt`), retention override (`RetentionDays`)
 - `RepositoryMembers` — cross-tenant shares (repository + user composite key, role `observer`/`operator`, created at)
 - `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
@@ -630,7 +645,7 @@ Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` 
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`, `AddRepositoryRetention`).
 
 ### The repair agent (v0.4)
 
@@ -712,6 +727,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `POST` | `/api/repositories/{id}/unpause` | Bearer | Resume monitoring |
 | `POST` | `/api/repositories/{id}/archive` | Bearer | Retire a repository (hidden from feeds, pipelines skip it) |
 | `POST` | `/api/repositories/{id}/unarchive` | Bearer | Restore an archived repository |
+| `PUT` | `/api/repositories/{id}/retention` | Bearer | Set history retention (`null` inherit / `0` forever / positive days) |
 | `POST` | `/api/repositories/bulk` | Bearer | Apply `pause`/`unpause`/`archive`/`unarchive` to up to 100 owned repos (per-repo results) |
 | `GET` | `/api/repositories/{id}/members` | Bearer | List repository members (`owner` flag) |
 | `POST` | `/api/repositories/{id}/members` | Bearer | Invite a member (`{ email, role }`; reshare updates role) |
@@ -806,6 +822,7 @@ push/PR to `master`.
 - **v0.23** *(done)* — reporting: daily digests group activity into "Your repositories" vs "Shared with you" sections; repository activity feed gains a CSV export (`GET /api/repositories/{id}/activity/export`) with a dashboard Export CSV button
 - **v0.24** *(done)* — digest cadence: per-user `digestFrequency` (daily/weekly) with `LastDigestSentAt` tracking; the worker skips users whose interval hasn't elapsed and widens the window to the cadence (weekly = 7 days); dashboard Account panel cadence selector; migration `AddUserDigestFrequency`
 - **v0.25** *(done)* — admin fleet health: `GET /api/admin/repositories` cross-tenant view (owner, health, pause/archive, open tickets, failures; health/owner/paused/archived filters) and a health breakdown on `GET /api/admin/overview`; dashboard admin console Fleet health panel
+- **v0.26** *(done)* — per-repository retention overrides: `PUT /api/repositories/{id}/retention` (inherit / keep-forever / custom days), the retention worker honours each policy for that repo's failures + tickets, audited `repository.retention`, dashboard Retention control; migration `AddRepositoryRetention`
 
 ---
 
