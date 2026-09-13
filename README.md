@@ -5,10 +5,10 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.29** — the **fleet CSV export** release.
-> `GET /api/admin/repositories/export` streams the filtered cross-tenant fleet view as
-> CSV for offline audits, and the dashboard's Fleet health panel gains an **Export CSV**
-> button. 242 tests passing.
+> Project status: **v0.30** — the **digest unsubscribe** release. Every digest email
+> now carries a one-click unsubscribe link backed by a per-user token
+> (`GET /api/digest/unsubscribe`, no login needed) that disables the digest and burns
+> the token; set `Digests:BaseUrl` to point links at your deployment. 245 tests passing.
 
 ---
 
@@ -249,7 +249,9 @@ The email outbox is no longer a black box:
   picks a **cadence** — `digestFrequency: "daily"` (24 h) or `"weekly"` (168 h). The
   worker tracks `LastDigestSentAt` per user, skips anyone whose interval hasn't
   elapsed, and widens the reporting window to match the cadence (a weekly digest looks
-  back seven days).
+  back seven days). Since v0.30 every digest carries a **one-click unsubscribe** link
+  (`GET /api/digest/unsubscribe?token=…`, no login required) — it flips `DigestEnabled`
+  off and burns the token. Set `Digests:BaseUrl` so the link points at your deployment.
 
 The dashboard **Delivery center** renders the email outbox with one-click retry, and a
 `Ping` button per webhook endpoint fires a signed `devsup.ping`.
@@ -548,6 +550,7 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
   `aiKey.create`, `aiKey.update`, `aiKey.delete` — configuration writes
 - `user.deactivate`, `user.activate` — admin account changes
 - `account.profileUpdate`, `account.passwordChange` — self-service profile/password changes
+- `account.digestUnsubscribe` — one-click digest unsubscribe
 - `webhook.test`, `webhook.retry`, `webhook.retryAll` — delivery operations
 - `webhook.activate`, `webhook.deactivate` — endpoint pause/resume
 - `repository.pause`, `repository.unpause` — monitoring pause/resume
@@ -646,7 +649,7 @@ devsup/
 
 ## 14. Data model (EF Core + SQLite default / PostgreSQL optional, migrations applied at startup)
 
-- `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, digest opt-out (`DigestEnabled`) + cadence (`DigestFrequency`, `LastDigestSentAt`), created timestamp
+- `Users` — account, email, display name, **PBKDF2 password hash**, `IsAdmin` flag, `Active` (suspension) flag, digest opt-out (`DigestEnabled`) + cadence (`DigestFrequency`, `LastDigestSentAt`) + unsubscribe token (`DigestUnsubscribeToken`), created timestamp
 - `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL, live app-health state (`AppHealthy`, `AppHealthCheckedAt`, `AppHealthLastError`), pause state (`Paused`, `PausedAt`), archive state (`Archived`, `ArchivedAt`), retention override (`RetentionDays`)
 - `RepositoryMembers` — cross-tenant shares (repository + user composite key, role `observer`/`operator`, created at)
 - `AiModelKeyBindings` — user, provider, model, encrypted key, display mask**
@@ -662,7 +665,7 @@ Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` 
 schema shipped as EF Core migrations (`InitialCreate`,
 `AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`,
 `AddAiModelKeyMaskUpdatedAtUniqueIndex`, `AddRepairTicketPullRequestUrl`,
-`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`, `AddRepositoryRetention`, `AddWebhookRepositoryScope`).
+`AddWebhookNotifications`, `AddRepositoryHealthChecks`, `AddWebhookChannelAndName`, `AddUserAdminAndActive`, `AddAuditEntries`, `AddNotificationPreferences`, `AddRepositoryPaused`, `AddRepositoryMembers`, `AddRepositoryArchived`, `AddUserDigestFrequency`, `AddRepositoryRetention`, `AddWebhookRepositoryScope`, `AddUserDigestUnsubscribeToken`).
 
 ### The repair agent (v0.4)
 
@@ -734,6 +737,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/account` | Bearer | View your profile (email, name, admin/active flags) |
 | `PUT` | `/api/account` | Bearer | Update your display name and/or digest settings (`digestEnabled`, `digestFrequency`) |
 | `POST` | `/api/account/password` | Bearer | Change your password (current password required) |
+| `GET` | `/api/digest/unsubscribe` | — | One-click digest unsubscribe (`token` query; burns the token) |
 | `GET` | `/api/auth/github/login` | — | Start GitHub OAuth (redirects to GitHub) |
 | `GET` | `/api/auth/github/callback` | — | GitHub OAuth callback → links account, returns JWT |
 | `GET` | `/api/auth/gitlab/login` | — | Start GitLab OAuth (redirects to GitLab) |
@@ -845,6 +849,7 @@ push/PR to `master`.
 - **v0.27** *(done)* — repository-scoped webhooks: optional `repositoryIds` scope on `POST /api/webhooks`; scoped endpoints receive only their repositories' events (unscoped = all), scope echoed on list, validated to owned repos, dashboard multi-select; migration `AddWebhookRepositoryScope`
 - **v0.28** *(done)* — webhook retry-all: `POST /api/webhooks/{id}/deliveries/retry-all` re-queues every failed delivery for an endpoint (audited `webhook.retryAll`), dashboard Retry all failed button
 - **v0.29** *(done)* — fleet CSV export: `GET /api/admin/repositories/export` streams the filtered cross-tenant fleet view as CSV, with an Export CSV button in the dashboard Fleet health panel
+- **v0.30** *(done)* — digest unsubscribe: per-user `DigestUnsubscribeToken` embedded as a one-click link in digest emails; anonymous `GET /api/digest/unsubscribe` disables the digest and burns the token (audited `account.digestUnsubscribe`); `Digests:BaseUrl` config; migration `AddUserDigestUnsubscribeToken`
 
 ---
 
