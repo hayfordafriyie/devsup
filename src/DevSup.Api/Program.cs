@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using DevSup.Agent.Ai;
 using DevSup.Agent.Git;
 using DevSup.Agent.Repair;
 using DevSup.Api;
@@ -63,6 +64,16 @@ builder.Services.AddSingleton<IKeyProtector>(keyProtector);
 var github = builder.Configuration.GetSection("GitHub").Get<GitHubAuthSettings>() ?? new GitHubAuthSettings();
 builder.Services.AddSingleton(github);
 builder.Services.AddHttpClient<IGitHubGateway, GitHubGateway>(client => client.Timeout = TimeSpan.FromSeconds(15));
+
+var gitlab = builder.Configuration.GetSection("GitLab").Get<GitLabAuthSettings>() ?? new GitLabAuthSettings();
+builder.Services.AddSingleton(gitlab);
+builder.Services.AddHttpClient<IGitLabGateway, GitLabGateway>(client => client.Timeout = TimeSpan.FromSeconds(15));
+
+var aiEndpointResolver = new AiEndpointResolver(builder.Configuration);
+builder.Services.AddSingleton(aiEndpointResolver);
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<IAiPatchGenerator, HttpAiPatchGenerator>();
+builder.Services.AddSingleton<AiRepairProvider>();
 
 var repairOptions = new RepairWorkerOptions
 {
@@ -292,6 +303,210 @@ app.MapGet("/api/auth/github/callback", async (
     var (jwt, expiresAt) = issuer.Issue(user);
     return Results.Ok(new LoginResponse(jwt, expiresAt, new UserResponse(user.Id, user.Email, user.DisplayName)));
 });
+
+app.MapGet("/api/auth/gitlab/login", (HttpContext http, IGitLabGateway gateway, GitLabAuthSettings gitlab) =>
+{
+    if (!gitlab.IsConfigured)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+            detail: "GitLab OAuth is not configured. Set GitLab:ClientId and GitLab:ClientSecret.");
+    }
+
+    var state = Guid.NewGuid().ToString("N");
+    http.Response.Cookies.Append(OAuthStateCookie, state, new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        MaxAge = TimeSpan.FromMinutes(10)
+    });
+
+    return Results.Redirect(gateway.BuildAuthorizeUrl(state));
+});
+
+app.MapGet("/api/auth/gitlab/callback", async (
+    string code,
+    string? state,
+    HttpContext http,
+    IGitLabGateway gateway,
+    GitLabAuthSettings gitlab,
+    DevSupDbContext db,
+    IPasswordHasherService hasher,
+    JwtTokenIssuer issuer,
+    IKeyProtector protector,
+    CancellationToken ct) =>
+{
+    if (!gitlab.IsConfigured)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+            detail: "GitLab OAuth is not configured.");
+    }
+
+    var expectedState = http.Request.Cookies[OAuthStateCookie];
+    if (string.IsNullOrWhiteSpace(state)
+        || expectedState is null
+        || !string.Equals(state, expectedState, StringComparison.Ordinal))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+            detail: "OAuth state mismatch — start the login flow again.");
+    }
+
+    http.Response.Cookies.Delete(OAuthStateCookie);
+    if (string.IsNullOrWhiteSpace(code))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Missing authorization code.");
+    }
+
+    GitLabTokenResult tokenResult;
+    GitLabProfile profile;
+    try
+    {
+        tokenResult = await gateway.ExchangeCodeAsync(code, ct);
+        profile = await gateway.GetProfileAsync(tokenResult.AccessToken, ct);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status502BadGateway,
+            detail: $"GitLab OAuth exchange failed: {ex.Message}");
+    }
+
+    if (string.IsNullOrWhiteSpace(profile.Email))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+            detail: "DevSup could not read an email from your GitLab profile. Make the email public on GitLab, then retry.");
+    }
+
+    var email = profile.Email.Trim().ToLowerInvariant();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
+
+    if (user is null)
+    {
+        user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = email,
+            DisplayName = profile.Name ?? profile.Login ?? email,
+            PasswordHash = hasher.Hash("gitlab-oauth-" + Guid.NewGuid().ToString("N")),
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.Users.Add(user);
+    }
+
+    var encrypted = protector.Protect(tokenResult.AccessToken);
+    var existingToken = await db.OAuthTokens.FirstOrDefaultAsync(
+        o => o.UserId == user.Id && o.Provider == GitProvider.GitLab, ct);
+
+    if (existingToken is null)
+    {
+        db.OAuthTokens.Add(new OAuthToken
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            Provider = GitProvider.GitLab,
+            EncryptedAccessToken = encrypted,
+            Scope = tokenResult.Scope,
+            LinkedAt = DateTimeOffset.UtcNow
+        });
+    }
+    else
+    {
+        var tokenEntry = db.Entry(existingToken);
+        tokenEntry.Property(t => t.EncryptedAccessToken).CurrentValue = encrypted;
+        tokenEntry.Property(t => t.Scope).CurrentValue = tokenResult.Scope;
+        tokenEntry.Property(t => t.LinkedAt).CurrentValue = DateTimeOffset.UtcNow;
+    }
+
+    await db.SaveChangesAsync(ct);
+
+    var (jwt, expiresAt) = issuer.Issue(user);
+    return Results.Ok(new LoginResponse(jwt, expiresAt, new UserResponse(user.Id, user.Email, user.DisplayName)));
+});
+
+app.MapGet("/api/ai-keys", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var keys = await db.AiModelKeyBindings.AsNoTracking()
+        .Where(k => k.UserId == ownerId)
+        .OrderBy(k => k.Provider)
+        .ThenBy(k => k.Model)
+        .Select(k => new AiKeyResponse(k.Provider, k.Model, k.KeyMask, k.UpdatedAt))
+        .ToListAsync(ct);
+
+    return Results.Ok(keys);
+}).RequireAuthorization();
+
+app.MapPost("/api/ai-keys", async (AiKeyRequest request, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+
+    if (string.IsNullOrWhiteSpace(request.Key) || request.Key.Length < 8)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "API key must be at least 8 characters.");
+    }
+    if (string.IsNullOrWhiteSpace(request.Model))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Model name is required.");
+    }
+
+    var encrypted = protector.Protect(request.Key);
+    var mask = "••••••••" + request.Key[^4..];
+
+    var existing = await db.AiModelKeyBindings.FirstOrDefaultAsync(
+        k => k.UserId == ownerId && k.Provider == request.Provider && k.Model == request.Model, ct);
+    var now = DateTimeOffset.UtcNow;
+
+    if (existing is null)
+    {
+        var binding = new AiModelKeyBinding
+        {
+            Id = Guid.NewGuid(),
+            UserId = ownerId,
+            Provider = request.Provider,
+            Model = request.Model,
+            EncryptedApiKey = encrypted,
+            KeyMask = mask,
+            UpdatedAt = now
+        };
+        db.AiModelKeyBindings.Add(binding);
+        await db.SaveChangesAsync(ct);
+        return Results.Created($"/api/ai-keys/{request.Provider}/{request.Model}",
+            new AiKeyResponse(binding.Provider, binding.Model, binding.KeyMask, binding.UpdatedAt));
+    }
+    else
+    {
+        var entry = db.Entry(existing);
+        entry.Property(k => k.EncryptedApiKey).CurrentValue = encrypted;
+        entry.Property(k => k.KeyMask).CurrentValue = mask;
+        entry.Property(k => k.UpdatedAt).CurrentValue = now;
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new AiKeyResponse(existing.Provider, existing.Model, mask, now));
+    }
+}).RequireAuthorization();
+
+app.MapDelete("/api/ai-keys", async (
+    string provider,
+    string model,
+    ClaimsPrincipal user,
+    DevSupDbContext db,
+    CancellationToken ct) =>
+{
+    if (!Enum.TryParse<AiModelProvider>(provider, ignoreCase: true, out var parsedProvider))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: $"Unknown AI provider '{provider}'.");
+    }
+
+    var ownerId = user.GetUserId();
+    var binding = await db.AiModelKeyBindings.FirstOrDefaultAsync(
+        k => k.UserId == ownerId && k.Provider == parsedProvider && k.Model == model, ct);
+
+    if (binding is null)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "No such key binding.");
+    }
+
+    db.AiModelKeyBindings.Remove(binding);
+    await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+}).RequireAuthorization();
 
 app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
