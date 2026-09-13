@@ -5,11 +5,11 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.21** — the **repository activity feed** release.
-> `GET /api/repositories/{id}/activity` gives owners and shared members a repo-scoped
-> audit timeline — lifecycle changes, member invites/revokes/transfers/leaves, and
-> ticket triage — with actor, before/after detail and timestamps, strictly isolated per
-> repository. The dashboard's **Activity** button opens it inline. 208 tests passing.
+> Project status: **v0.22** — the **bulk repository actions** release.
+> `POST /api/repositories/bulk` applies `pause` / `unpause` / `archive` / `unarchive`
+> to up to 100 owned repositories in one call, returning a per-repository result
+> (`ok` / `unchanged` / `forbidden` / `notFound`) and auditing each change. The
+> dashboard gains selection checkboxes and a bulk action bar. 214 tests passing.
 
 ---
 
@@ -281,6 +281,19 @@ rejected with `409`, and the dashboard keeps an **Archived** section with one-cl
 **Restore**. Both transitions are audited (`repository.archive` /
 `repository.unarchive`) and are owner-only. Archived repositories are hidden from
 **shared members** too — only the owner sees the archived list.
+
+### Bulk repository actions (v0.22)
+
+Fleet-scale housekeeping: `POST /api/repositories/bulk` applies one lifecycle action —
+`pause`, `unpause`, `archive` or `unarchive` — to up to 100 repositories in a single
+call (`{ action, repositoryIds }`). It returns a **per-repository result**: `ok`
+(changed), `unchanged` (already in the desired state — bulk operations are forgiving,
+not `409`s), `forbidden` (you don't own it) or `notFound`. Only repositories you own
+are acted on; shared repositories you merely belong to are reported `forbidden` and
+left alone. Each change is audited exactly like the single-repository endpoint, so it
+shows up in that repository's activity feed. The dashboard's repositories table gains
+selection checkboxes and a **Pause / Resume / Archive** bulk bar (only owned rows are
+selectable).
 
 ## 9. Event replay & re-dispatch
 
@@ -606,6 +619,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `POST` | `/api/repositories/{id}/unpause` | Bearer | Resume monitoring |
 | `POST` | `/api/repositories/{id}/archive` | Bearer | Retire a repository (hidden from feeds, pipelines skip it) |
 | `POST` | `/api/repositories/{id}/unarchive` | Bearer | Restore an archived repository |
+| `POST` | `/api/repositories/bulk` | Bearer | Apply `pause`/`unpause`/`archive`/`unarchive` to up to 100 owned repos (per-repo results) |
 | `GET` | `/api/repositories/{id}/members` | Bearer | List repository members (`owner` flag) |
 | `POST` | `/api/repositories/{id}/members` | Bearer | Invite a member (`{ email, role }`; reshare updates role) |
 | `DELETE` | `/api/repositories/{id}/members/{userId}` | Bearer | Revoke a member's access |
@@ -693,6 +707,7 @@ push/PR to `master`.
 - **v0.19** *(done)* — ownership transfer & member self-service: owner hands a repo to an operator member (previous owner demoted to operator, new owner emailed), members can leave a shared repo; both audited, dashboard Transfer/Leave controls
 - **v0.20** *(done)* — repository archiving: archive retires a repo from the repository list, overview, failure/ticket feeds and all background pipelines (health, repair, verification, digest) while retaining history; ingest returns `409`, `?archived=true` lists retired repos, dashboard Archived section restores them; audited, migration `AddRepositoryArchived`
 - **v0.21** *(done)* — repository activity feed: `GET /api/repositories/{id}/activity` returns a repo-scoped audit timeline (lifecycle, member changes, ticket triage) with actor/before/after/timestamp, readable by owners and shared members and strictly isolated per repository; dashboard Activity panel
+- **v0.22** *(done)* — bulk repository actions: `POST /api/repositories/bulk` applies pause/unpause/archive/unarchive to up to 100 owned repos with per-repo results (ok/unchanged/forbidden/notFound) and per-repo audits; dashboard selection checkboxes + bulk action bar
 
 ---
 
