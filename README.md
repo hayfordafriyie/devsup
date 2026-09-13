@@ -5,14 +5,15 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.5** — on top of v0.4 (the repair agent drives
-> investigate → patch → commit → push) and v0.3/v0.2 (SMTP outbox, GitHub OAuth,
-> SQLite, JWT accounts, tickets), you can now **bring your own AI model keys**
-> (OpenAI, Anthropic Claude, Google Gemini, DeepSeek, or a local Ollama endpoint)
-> through a key-management API, GitLab is supported for both OAuth connections and
-> agent pushes, and the agent hands every ticket to the model first, falling back to
-> `.devsup/repairs.json` templates only when the model has nothing safe to offer.
-> 55 tests passing.
+> Project status: **v0.6** — on top of v0.5 (BYO AI keys, GitLab support, key
+> management) and v0.4/v0.3/v0.2 (agent repair loop, SMTP outbox, GitHub OAuth,
+> SQLite, JWT accounts, tickets), the consumer SDK middleware now **negotiates a
+> schema version** with the API (`X-DevSup-Schema-Version`) and **redacts secrets**
+> from captured payloads before they leave your app, the API enforces that version
+> and re-redacts server-side as defense in depth, and connected repositories can
+> opt into a **pull-request repair flow**: instead of pushing straight to the
+> default branch, the agent lands the fix on a feature branch, opens a PR/MR on
+> GitHub or GitLab, and emails you a review link. 76 tests passing.
 
 ---
 
@@ -286,7 +287,7 @@ push/PR to `master`.
 - **v0.3** *(done)* — SMTP outbox delivery with retries, GitHub OAuth + encrypted token storage, not-a-code-error emails
 - **v0.4** *(done)* — agent repair loop: investigate → template patch → commit → push, ticket status updates, "fixed"/"needs review" emails
 - **v0.5** *(done)* — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, key management API
-- **v0.6** — consumer versioning of the middleware, payload sanitization hardening, PR-based (opt-in) flow
+- **v0.6** *(done)* — consumer versioning of the middleware (`X-DevSup-Schema-Version`), payload sanitization hardening, PR-based (opt-in) repair flow
 - **v0.7** — multi-repo, dashboards, Slack/webhook notifications, external app-URL checks
 
 ---
