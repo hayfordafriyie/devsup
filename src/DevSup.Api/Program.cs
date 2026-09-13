@@ -15,6 +15,7 @@ using DevSup.Core.Services;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Email;
 using DevSup.Infrastructure.HealthChecks;
+using DevSup.Infrastructure.Retention;
 using DevSup.Infrastructure.Security;
 using DevSup.Infrastructure.Webhooks;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -90,6 +91,16 @@ builder.Services.AddSingleton(healthOptions);
 builder.Services.AddSingleton<IAppUrlProber, HttpAppUrlProber>();
 builder.Services.AddScoped<AppHealthChecker>();
 builder.Services.AddHostedService<AppHealthCheckWorker>();
+
+var retentionOptions = new RetentionOptions
+{
+    WindowDays = int.TryParse(builder.Configuration["Retention:WindowDays"], out var retentionDays) ? retentionDays : 365,
+    IntervalHours = int.TryParse(builder.Configuration["Retention:IntervalHours"], out var retentionHours) ? retentionHours : 24,
+    BatchSize = int.TryParse(builder.Configuration["Retention:BatchSize"], out var retentionBatch) ? retentionBatch : 500
+};
+builder.Services.AddSingleton(retentionOptions);
+builder.Services.AddScoped<RetentionCleaner>();
+builder.Services.AddHostedService<RetentionWorker>();
 
 var dataProtectionKey = builder.Configuration["Security:DataProtectionKey"]
     ?? "devsup-dev-only-data-protection-key-change-in-production";
