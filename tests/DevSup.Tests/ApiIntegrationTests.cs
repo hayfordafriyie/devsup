@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using DevSup.Api;
 using DevSup.Api.Auth;
+using DevSup.Agent.Ai;
 using DevSup.Agent.Git;
 using DevSup.Infrastructure.Email;
 using DevSup.Infrastructure.Persistence;
@@ -60,6 +61,44 @@ public sealed class FakeGitHubGateway(GitHubAuthSettings settings) : IGitHubGate
         => Task.FromResult(new GitHubProfile("octocat", "Octo Cat", "octocat@example.com"));
 }
 
+public sealed class FakeGitLabGateway : IGitLabGateway
+{
+    public GitLabAuthSettings Settings { get; }
+
+    public FakeGitLabGateway(GitLabAuthSettings settings) => Settings = settings;
+
+    public string BuildAuthorizeUrl(string state)
+        => Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(
+            Settings.AuthorizeUrl,
+            new Dictionary<string, string?>
+            {
+                ["client_id"] = Settings.ClientId,
+                ["redirect_uri"] = Settings.RedirectUri,
+                ["scope"] = Settings.Scope,
+                ["state"] = state,
+                ["response_type"] = "code"
+            });
+
+    public Task<GitLabTokenResult> ExchangeCodeAsync(string code, CancellationToken ct)
+        => Task.FromResult(new GitLabTokenResult("glpat_fake_access_token", "read_user api"));
+
+    public Task<GitLabProfile> GetProfileAsync(string accessToken, CancellationToken ct)
+        => Task.FromResult(new GitLabProfile("gitee", "Gita Bret", "gita@example.com"));
+}
+
+public sealed class FakeAiPatchGenerator : IAiPatchGenerator
+{
+    public AiPatchSuggestion? Result { get; set; }
+
+    public int CallCount { get; private set; }
+
+    public Task<AiPatchSuggestion?> GenerateAsync(AiGenerationRequest request, AiModelEndpoint endpoint, string apiKey, CancellationToken ct)
+    {
+        CallCount++;
+        return Task.FromResult(Result);
+    }
+}
+
 public sealed class DevSupApiFactory : WebApplicationFactory<Program>
 {
     private readonly InMemoryDatabaseRoot _databaseRoot = new();
@@ -72,6 +111,15 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
     public FakeEmailSender EmailSender { get; } = new();
 
     public FakeGitAdapter Git { get; } = new();
+
+    public FakeAiPatchGenerator AiGenerator { get; } = new();
+
+    public FakeGitLabGateway GitLab { get; } = new(new GitLabAuthSettings
+    {
+        ClientId = "test-gitlab-client-id",
+        ClientSecret = "test-gitlab-client-secret",
+        RedirectUri = "/api/auth/gitlab/callback"
+    });
 
     public GitHubAuthSettings GitHubAuth { get; } = new()
     {
@@ -88,6 +136,8 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
             {
                 ["GitHub:ClientId"] = "test-client-id",
                 ["GitHub:ClientSecret"] = "test-client-secret",
+                ["GitLab:ClientId"] = "test-gitlab-client-id",
+                ["GitLab:ClientSecret"] = "test-gitlab-client-secret",
                 ["Emailing:IntervalSeconds"] = "3600",
                 ["Repairing:IntervalSeconds"] = "3600"
             });
@@ -101,14 +151,20 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<IEmailSender>();
             services.RemoveAll<IGitHubGateway>();
             services.RemoveAll<GitHubAuthSettings>();
+            services.RemoveAll<IGitLabGateway>();
+            services.RemoveAll<GitLabAuthSettings>();
             services.RemoveAll<IGitAdapter>();
+            services.RemoveAll<IAiPatchGenerator>();
 
             services.AddDbContext<DevSupDbContext>(options =>
                 options.UseInMemoryDatabase("devsup-tests", _databaseRoot));
             services.AddSingleton<IEmailSender>(EmailSender);
             services.AddSingleton<IGitHubGateway>(new FakeGitHubGateway(GitHubAuth));
             services.AddSingleton(GitHubAuth);
+            services.AddSingleton<IGitLabGateway>(GitLab);
+            services.AddSingleton(GitLab.Settings);
             services.AddSingleton<IGitAdapter>(Git);
+            services.AddSingleton<IAiPatchGenerator>(AiGenerator);
         });
     }
 }

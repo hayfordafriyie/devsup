@@ -53,7 +53,7 @@ public sealed class FakeGitAdapter : IGitAdapter
         }
         """;
 
-    public Task<string> CloneAsync(string cloneUrl, string branch, string accessToken, CancellationToken ct)
+    public Task<string> CloneAsync(string cloneUrl, string branch, GitProvider provider, string accessToken, CancellationToken ct)
     {
         CloneCount++;
         var dir = Path.Combine(Path.GetTempPath(), "devsup-tests-ws", Guid.NewGuid().ToString("N"));

@@ -8,6 +8,13 @@ namespace DevSup.Tests;
 
 public static class Helpers
 {
+    /// <summary>Mirrors the API's camelCase + string-enum JSON contract for reading responses.</summary>
+    public static readonly System.Text.Json.JsonSerializerOptions ApiJson = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.CamelCase) }
+    };
+
     public static async Task<string> LoginAndGetTokenAsync(HttpClient client, string email, string displayName)
     {
         await client.PostAsJsonAsync("/api/users/register", new { email, displayName, password = "password123" });
