@@ -110,16 +110,22 @@
             return;
         }
         tbody.innerHTML = overview.repositories.map(function (row) {
-            var status = healthStatus(row);
-            var checked = row.appHealthCheckedAt
-                ? new Date(row.appHealthCheckedAt).toLocaleString()
-                : "never";
+            var status = row.paused
+                ? { label: "Paused", kind: "muted" }
+                : healthStatus(row);
+            var checked = row.paused
+                ? "since " + new Date(row.pausedAt).toLocaleString()
+                : (row.appHealthCheckedAt ? new Date(row.appHealthCheckedAt).toLocaleString() : "never");
+            var action = row.paused
+                ? '<button data-repo-resume="' + row.id + '" title="Resume monitoring">Resume</button>'
+                : '<button data-repo-pause="' + row.id + '" title="Pause monitoring">Pause</button>';
             return "<tr>" +
                 "<td>" + escapeHtml(repoName(row.cloneUrl)) + "</td>" +
                 "<td><a href=\"" + escapeHtml(row.appUrl || "#") + "\" target=\"_blank\" rel=\"noopener\">" + escapeHtml(row.appUrl || "not configured") + "</a></td>" +
                 "<td>" + badge(status) + "</td>" +
                 "<td>" + escaped(checked) + "</td>" +
                 "<td>" + escaped(row.appHealthLastError) + "</td>" +
+                "<td>" + action + "</td>" +
                 "</tr>";
         }).join("");
         section.hidden = false;
@@ -239,9 +245,12 @@
                 var events = escapeHtml(w.events.map(function (e) {
                     return String(e).replace(/([A-Z])/g, " $1").toLowerCase();
                 }).join(", "));
-                return "<li>" + channelBadge(w.channel) + " " + name +
+                return "<li>" + channelBadge(w.channel) + " " + (w.active ? "" : '<span class="status muted">Inactive</span> ') + name +
                     ' <a href="' + escapeHtml(w.url) + '" target="_blank" rel="noopener">' + escapeHtml(w.url) + "</a>" +
                     '<span class="muted">&nbsp;&middot; ' + events + "</span>" +
+                    (w.active
+                        ? '<button data-webhook-pause="' + w.id + '" title="Stop delivering to this endpoint">Pause</button>'
+                        : '<button data-webhook-resume="' + w.id + '" title="Resume delivering to this endpoint">Resume</button>') +
                     '<button data-log="' + w.id + '" title="Delivery log">Log</button>' +
                     '<button data-ping="' + w.id + '" title="Send a signed test ping">Ping</button>' +
                     '<button data-delete="' + w.id + '">Delete</button>' +
@@ -529,7 +538,31 @@
     });
 
     document.addEventListener("click", function (event) {
-        var button = event.target.closest("[data-ticket-detail]");
+        var button = event.target.closest("[data-repo-pause]");
+        if (button) {
+            var pauseId = button.getAttribute("data-repo-pause");
+            fetch("/api/repositories/" + pauseId + "/pause", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to pause repository");
+                return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-repo-resume]");
+        if (button) {
+            var resumeId = button.getAttribute("data-repo-resume");
+            fetch("/api/repositories/" + resumeId + "/unpause", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to resume repository");
+                return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-ticket-detail]");
         if (button) {
             loadTicketDetail(button.getAttribute("data-ticket-detail")).catch(function (e) { showError(e.message); });
             return;
@@ -561,6 +594,30 @@
         button = event.target.closest("[data-ticket-back]");
         if (button) {
             document.getElementById("ticket-detail-section").hidden = true;
+            return;
+        }
+        button = event.target.closest("[data-webhook-pause]");
+        if (button) {
+            var pauseHookId = button.getAttribute("data-webhook-pause");
+            fetch("/api/webhooks/" + pauseHookId + "/deactivate", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to pause webhook");
+                return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-webhook-resume]");
+        if (button) {
+            var resumeHookId = button.getAttribute("data-webhook-resume");
+            fetch("/api/webhooks/" + resumeHookId + "/activate", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to resume webhook");
+                return load();
+            }).catch(function (e) { showError(e.message); });
             return;
         }
         button = event.target.closest("[data-delete]");

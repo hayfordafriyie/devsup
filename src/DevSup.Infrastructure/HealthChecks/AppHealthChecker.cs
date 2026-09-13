@@ -24,7 +24,7 @@ public sealed class AppHealthChecker(
     public async Task<int> ProbeDueAsync(int batchSize, TimeSpan timeout, CancellationToken ct)
     {
         var repositories = await db.ConnectedRepositories
-            .Where(r => r.AppUrl != null && r.AppUrl != "")
+            .Where(r => r.AppUrl != null && r.AppUrl != "" && !r.Paused)
             .Take(batchSize)
             .ToListAsync(ct);
 

@@ -125,5 +125,13 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("account-section", html2);
         Assert.Contains("digest-toggle", js);
         Assert.Contains("digestEnabled", js);
+        Assert.Contains("data-repo-pause", js);
+        Assert.Contains("data-repo-resume", js);
+        Assert.Contains("\"/api/repositories/\" + pauseId + \"/pause\"", js);
+        Assert.Contains("\"/api/repositories/\" + resumeId + \"/unpause\"", js);
+        Assert.Contains("data-webhook-pause", js);
+        Assert.Contains("data-webhook-resume", js);
+        Assert.Contains("\"/api/webhooks/\" + pauseHookId + \"/deactivate\"", js);
+        Assert.Contains("\"/api/webhooks/\" + resumeHookId + \"/activate\"", js);
     }
 }

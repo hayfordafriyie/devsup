@@ -40,7 +40,8 @@ public sealed class RepairProcessor(
     public async Task<int> ProcessPendingAsync(int batchSize, CancellationToken ct)
     {
         var tickets = await db.RepairTickets
-            .Where(t => t.Status == TicketStatus.New && t.Category == FailureCategory.CodeError)
+            .Where(t => t.Status == TicketStatus.New && t.Category == FailureCategory.CodeError
+                && !db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.Paused))
             .OrderBy(t => t.UpdatedAt)
             .Take(batchSize)
             .ToListAsync(ct);

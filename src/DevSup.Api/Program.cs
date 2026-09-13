@@ -747,6 +747,57 @@ app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db,
     return Results.Ok(repositories);
 }).RequireAuthorization();
 
+app.MapPost("/api/repositories/{id:guid}/pause", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var repository = await db.ConnectedRepositories
+        .FirstOrDefaultAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+
+    if (repository is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (repository.Paused)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Repository monitoring is already paused.");
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    db.Entry(repository).Property(r => r.Paused).CurrentValue = true;
+    db.Entry(repository).Property(r => r.PausedAt).CurrentValue = now;
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "repository.pause", "ConnectedRepository",
+        repository.Id.ToString(), after: $"{repository.CloneUrl} paused", ct: ct);
+
+    return Results.Ok(new { repositoryId = repository.Id, paused = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/repositories/{id:guid}/unpause", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var repository = await db.ConnectedRepositories
+        .FirstOrDefaultAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+
+    if (repository is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (!repository.Paused)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Repository monitoring is not paused.");
+    }
+
+    db.Entry(repository).Property(r => r.Paused).CurrentValue = false;
+    db.Entry(repository).Property(r => r.PausedAt).CurrentValue = null;
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "repository.unpause", "ConnectedRepository",
+        repository.Id.ToString(), after: $"{repository.CloneUrl} resumed", ct: ct);
+
+    return Results.Ok(new { repositoryId = repository.Id, paused = false });
+}).RequireAuthorization();
+
 app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest httpRequest, ClaimsPrincipal user, DevSupDbContext db, IFailureClassifier classifier, CancellationToken ct) =>
 {
     if (httpRequest.Headers.TryGetValue(PayloadSanitizer.SchemaVersionHeaderName, out var versionHeader)
@@ -767,6 +818,12 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest http
     if (repository is null)
     {
         return Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "Repository not found for this account.");
+    }
+
+    if (repository.Paused)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict,
+            detail: "Repository monitoring is paused — unpause it before ingesting failures.");
     }
 
     var failure = new FailureEvent
@@ -992,7 +1049,7 @@ app.MapGet("/api/overview", async (ClaimsPrincipal user, DevSupDbContext db, Can
     var repositories = await db.ConnectedRepositories
         .AsNoTracking()
         .Where(r => r.OwnerUserId == ownerId)
-        .Select(r => new RepositoryHealthRow(r.Id, r.CloneUrl, r.AppUrl, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError))
+        .Select(r => new RepositoryHealthRow(r.Id, r.CloneUrl, r.AppUrl, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Paused, r.PausedAt))
         .ToListAsync(ct);
 
     var tickets = await db.RepairTickets
@@ -1335,6 +1392,52 @@ app.MapDelete("/api/webhooks/{id:guid}", async (Guid id, ClaimsPrincipal user, D
     await audit.RecordAsync(actor.Id, actor.Email, "webhook.delete", "WebhookEndpoint",
         webhook.Id.ToString(), before: webhook.Url, ct: ct);
     return Results.NoContent();
+}).RequireAuthorization();
+
+app.MapPost("/api/webhooks/{id:guid}/deactivate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var webhook = await db.WebhookEndpoints.FirstOrDefaultAsync(w => w.Id == id && w.UserId == user.GetUserId(), ct);
+    if (webhook is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (!webhook.Active)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Webhook endpoint is already inactive.");
+    }
+
+    db.Entry(webhook).Property(w => w.Active).CurrentValue = false;
+    await db.SaveChangesAsync(ct);
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == user.GetUserId(), ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "webhook.deactivate", "WebhookEndpoint",
+        webhook.Id.ToString(), before: "active", after: "inactive", ct: ct);
+
+    return Results.Ok(new { id = webhook.Id, active = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/webhooks/{id:guid}/activate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var webhook = await db.WebhookEndpoints.FirstOrDefaultAsync(w => w.Id == id && w.UserId == user.GetUserId(), ct);
+    if (webhook is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (webhook.Active)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Webhook endpoint is already active.");
+    }
+
+    db.Entry(webhook).Property(w => w.Active).CurrentValue = true;
+    await db.SaveChangesAsync(ct);
+    var actor = await db.Users.AsNoTracking().Select(u => new { u.Id, u.Email })
+        .SingleAsync(u => u.Id == user.GetUserId(), ct);
+    await audit.RecordAsync(actor.Id, actor.Email, "webhook.activate", "WebhookEndpoint",
+        webhook.Id.ToString(), before: "inactive", after: "active", ct: ct);
+
+    return Results.Ok(new { id = webhook.Id, active = true });
 }).RequireAuthorization();
 
 app.MapPost("/api/webhooks/{id:guid}/rotate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, AuditRecorder audit, CancellationToken ct) =>

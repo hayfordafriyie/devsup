@@ -93,7 +93,9 @@ public sealed record RepositoryHealthRow(
     string? AppUrl,
     bool? AppHealthy,
     DateTimeOffset? AppHealthCheckedAt,
-    string? AppHealthLastError);
+    string? AppHealthLastError,
+    bool Paused,
+    DateTimeOffset? PausedAt);
 
 public sealed record TicketSummary(
     int New,

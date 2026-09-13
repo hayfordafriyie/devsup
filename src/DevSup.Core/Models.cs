@@ -45,6 +45,11 @@ public sealed record ConnectedRepository
     /// <summary>Diagnostic from the last probe (status code or transport error).</summary>
     public string? AppHealthLastError { get; init; }
 
+    /// <summary>When true monitoring is paused: health probes, failure ingest and repair pick-up stop.</summary>
+    public bool Paused { get; init; }
+
+    public DateTimeOffset? PausedAt { get; init; }
+
     public DateTimeOffset ConnectedAt { get; init; }
 }
 
