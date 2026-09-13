@@ -1106,6 +1106,100 @@ app.MapGet("/api/repositories/{id:guid}/activity", async (Guid id, ClaimsPrincip
     return Results.Ok(rows);
 }).RequireAuthorization();
 
+app.MapPost("/api/repositories/bulk", async (BulkRepositoryActionRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var action = request.Action?.Trim().ToLowerInvariant();
+    if (action is not ("pause" or "unpause" or "archive" or "unarchive"))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+            detail: "Action must be pause, unpause, archive or unarchive.");
+    }
+
+    var ids = (request.RepositoryIds ?? []).Distinct().Take(100).ToList();
+    if (ids.Count == 0)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "At least one repository id is required.");
+    }
+
+    var repositories = await db.ConnectedRepositories.Where(r => ids.Contains(r.Id)).ToListAsync(ct);
+    var actor = user.Identity?.Name ?? "";
+    var results = new List<BulkRepositoryActionResult>();
+
+    foreach (var id in ids)
+    {
+        var repository = repositories.FirstOrDefault(r => r.Id == id);
+        if (repository is null)
+        {
+            results.Add(new BulkRepositoryActionResult(id, "notFound", null));
+            continue;
+        }
+        if (repository.OwnerUserId != ownerId)
+        {
+            results.Add(new BulkRepositoryActionResult(id, "forbidden", "You do not own this repository."));
+            continue;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        string auditAction;
+        string after;
+        switch (action)
+        {
+            case "pause":
+                if (repository.Paused)
+                {
+                    results.Add(new BulkRepositoryActionResult(id, "unchanged", "Already paused."));
+                    continue;
+                }
+                db.Entry(repository).Property(r => r.Paused).CurrentValue = true;
+                db.Entry(repository).Property(r => r.PausedAt).CurrentValue = now;
+                auditAction = "repository.pause";
+                after = "paused";
+                break;
+            case "unpause":
+                if (!repository.Paused)
+                {
+                    results.Add(new BulkRepositoryActionResult(id, "unchanged", "Not paused."));
+                    continue;
+                }
+                db.Entry(repository).Property(r => r.Paused).CurrentValue = false;
+                db.Entry(repository).Property(r => r.PausedAt).CurrentValue = null;
+                auditAction = "repository.unpause";
+                after = "resumed";
+                break;
+            case "archive":
+                if (repository.Archived)
+                {
+                    results.Add(new BulkRepositoryActionResult(id, "unchanged", "Already archived."));
+                    continue;
+                }
+                db.Entry(repository).Property(r => r.Archived).CurrentValue = true;
+                db.Entry(repository).Property(r => r.ArchivedAt).CurrentValue = now;
+                auditAction = "repository.archive";
+                after = "archived";
+                break;
+            default:
+                if (!repository.Archived)
+                {
+                    results.Add(new BulkRepositoryActionResult(id, "unchanged", "Not archived."));
+                    continue;
+                }
+                db.Entry(repository).Property(r => r.Archived).CurrentValue = false;
+                db.Entry(repository).Property(r => r.ArchivedAt).CurrentValue = null;
+                auditAction = "repository.unarchive";
+                after = "restored";
+                break;
+        }
+
+        await db.SaveChangesAsync(ct);
+        await audit.RecordAsync(ownerId, actor, auditAction, "ConnectedRepository",
+            repository.Id.ToString(), after: $"{repository.CloneUrl} {after}", ct: ct);
+        results.Add(new BulkRepositoryActionResult(id, "ok", null));
+    }
+
+    return Results.Ok(new BulkRepositoryActionResponse(action, results));
+}).RequireAuthorization();
+
 app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest httpRequest, ClaimsPrincipal user, DevSupDbContext db, IFailureClassifier classifier, CancellationToken ct) =>
 {
     if (httpRequest.Headers.TryGetValue(PayloadSanitizer.SchemaVersionHeaderName, out var versionHeader)

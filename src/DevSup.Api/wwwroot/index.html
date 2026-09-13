@@ -25,9 +25,16 @@
 
         <section id="repositories-section" class="panel" hidden>
             <h2>Repositories</h2>
+            <div id="repo-bulk-bar" class="bulk-bar" hidden>
+                <span id="repo-bulk-count" class="muted"></span>
+                <button data-bulk-action="pause">Pause</button>
+                <button data-bulk-action="unpause">Resume</button>
+                <button data-bulk-action="archive">Archive</button>
+            </div>
             <table id="repositories">
                 <thead>
                     <tr>
+                        <th class="select-col"></th>
                         <th>Repository</th>
                         <th>App URL</th>
                         <th>Status</th>

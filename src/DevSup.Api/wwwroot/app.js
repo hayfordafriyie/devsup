@@ -126,7 +126,11 @@
             if (row.owner) {
                 action += '<button data-repo-archive="' + row.id + '" title="Retire from active monitoring">Archive</button>';
             }
+            var selectCell = row.owner
+                ? '<input type="checkbox" class="repo-select" data-repo-select="' + row.id + '" />'
+                : "";
             return "<tr>" +
+                "<td class=\"select-col\">" + selectCell + "</td>" +
                 "<td>" + escapeHtml(repoName(row.cloneUrl)) + "</td>" +
                 "<td><a href=\"" + escapeHtml(row.appUrl || "#") + "\" target=\"_blank\" rel=\"noopener\">" + escapeHtml(row.appUrl || "not configured") + "</a></td>" +
                 "<td>" + badge(status) + "</td>" +
@@ -136,6 +140,19 @@
                 "</tr>";
         }).join("");
         section.hidden = false;
+        updateBulkBar();
+    }
+
+    function selectedRepoIds() {
+        return Array.prototype.map.call(document.querySelectorAll(".repo-select:checked"), function (box) {
+            return box.getAttribute("data-repo-select");
+        });
+    }
+
+    function updateBulkBar() {
+        var ids = selectedRepoIds();
+        document.getElementById("repo-bulk-bar").hidden = ids.length === 0;
+        document.getElementById("repo-bulk-count").textContent = ids.length + " selected";
     }
 
     var membersRepoId = null;
@@ -643,6 +660,12 @@
         }
     });
 
+    document.addEventListener("change", function (event) {
+        if (event.target.closest(".repo-select")) {
+            updateBulkBar();
+        }
+    });
+
     document.addEventListener("click", function (event) {
         var button = event.target.closest("[data-repo-pause]");
         if (button) {
@@ -664,6 +687,22 @@
                 headers: { Authorization: "Bearer " + token }
             }).then(function (response) {
                 if (!response.ok) throw new Error("Failed to resume repository");
+                return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-bulk-action]");
+        if (button) {
+            var bulkAction = button.getAttribute("data-bulk-action");
+            var bulkIds = selectedRepoIds();
+            if (bulkIds.length === 0) return;
+            if (bulkAction === "archive" && !window.confirm("Archive " + bulkIds.length + " repositories?")) return;
+            fetch("/api/repositories/bulk", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+                body: JSON.stringify({ action: bulkAction, repositoryIds: bulkIds })
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Bulk action failed");
                 return load();
             }).catch(function (e) { showError(e.message); });
             return;

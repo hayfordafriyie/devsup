@@ -92,6 +92,12 @@ public sealed record TransferRepositoryRequest(string Email);
 
 public sealed record RepositoryActivityItem(Guid Id, string ActorEmail, string Action, string? Before, string? After, DateTimeOffset Timestamp);
 
+public sealed record BulkRepositoryActionRequest(string Action, List<Guid> RepositoryIds);
+
+public sealed record BulkRepositoryActionResult(Guid RepositoryId, string Status, string? Message);
+
+public sealed record BulkRepositoryActionResponse(string Action, IReadOnlyList<BulkRepositoryActionResult> Results);
+
 public sealed record AiKeyResponse(AiModelProvider Provider, string Model, string? KeyMask, DateTimeOffset UpdatedAt);
 
 public sealed record CreateWebhookRequest(string Url, List<WebhookEvent>? Events = null, string? Name = null, WebhookChannel Channel = WebhookChannel.Http);
