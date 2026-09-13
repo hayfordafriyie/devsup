@@ -27,6 +27,8 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.HasIndex(u => u.Email).IsUnique();
             entity.Property(u => u.DisplayName).HasMaxLength(100).IsRequired();
             entity.Property(u => u.PasswordHash).HasMaxLength(512).IsRequired();
+            entity.Property(u => u.IsAdmin).HasDefaultValue(false);
+            entity.Property(u => u.Active).HasDefaultValue(true);
         });
 
         modelBuilder.Entity<ConnectedRepository>(entity =>

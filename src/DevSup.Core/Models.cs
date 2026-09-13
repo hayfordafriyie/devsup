@@ -10,6 +10,13 @@ public sealed record User
 
     /// <summary>PBKDF2 hash produced by PasswordHasher&lt;User&gt;, never the plain-text password.</summary>
     public required string PasswordHash { get; init; }
+
+    /// <summary>Platform administrator; promoted from the Admin:Emails configuration at startup.</summary>
+    public bool IsAdmin { get; init; }
+
+    /// <summary>When false the account cannot sign in; used by platform admins to suspend a tenant.</summary>
+    public bool Active { get; init; } = true;
+
     public DateTimeOffset CreatedAt { get; init; }
 }
 

@@ -86,3 +86,21 @@ public sealed record OverviewResponse(
     int UncheckedRepos,
     IReadOnlyList<RepositoryHealthRow> Repositories,
     TicketSummary Tickets);
+
+public sealed record AdminUserResponse(
+    Guid Id,
+    string Email,
+    string DisplayName,
+    bool IsAdmin,
+    bool Active,
+    DateTimeOffset CreatedAt,
+    int RepositoryCount,
+    int TicketCount);
+
+public sealed record AdminOverviewResponse(
+    int TotalUsers,
+    int ActiveUsers,
+    int TotalRepositories,
+    int TotalFailures,
+    int OpenTickets,
+    int WebhookEndpoints);

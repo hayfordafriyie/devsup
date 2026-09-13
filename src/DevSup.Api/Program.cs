@@ -169,6 +169,25 @@ await using (var scope = app.Services.CreateAsyncScope())
     {
         await db.Database.MigrateAsync();
     }
+
+    // Idempotently promote configured platform admins so the first admin always exists.
+    var adminEmails = (builder.Configuration["Admin:Emails"] ?? string.Empty)
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(e => e.ToLowerInvariant())
+        .ToHashSet();
+
+    if (adminEmails.Count > 0)
+    {
+        var admins = await db.Users.Where(u => adminEmails.Contains(u.Email)).ToListAsync();
+        foreach (var admin in admins.Where(u => !u.IsAdmin))
+        {
+            db.Entry(admin).Property(u => u.IsAdmin).CurrentValue = true;
+        }
+        if (admins.Count > 0)
+        {
+            await db.SaveChangesAsync();
+        }
+    }
 }
 
 if (app.Environment.IsDevelopment())
@@ -237,6 +256,11 @@ app.MapPost("/api/users/login", async (LoginRequest request, DevSupDbContext db,
     if (user is null || !hasher.Verify(request.Password ?? string.Empty, user.PasswordHash))
     {
         return Results.Problem(statusCode: StatusCodes.Status401Unauthorized, detail: "Invalid email or password.");
+    }
+
+    if (!user.Active)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status403Forbidden, detail: "This account has been deactivated.");
     }
 
     var (token, expiresAt) = issuer.Issue(user);
@@ -809,6 +833,87 @@ app.MapGet("/api/overview", async (ClaimsPrincipal user, DevSupDbContext db, Can
         Tickets: counts));
 }).RequireAuthorization();
 
+app.MapGet("/api/admin/overview", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    if (!await IsAdminAsync(user, db, ct))
+    {
+        return Results.Forbid();
+    }
+
+    var totalUsers = await db.Users.CountAsync(ct);
+    var activeUsers = await db.Users.CountAsync(u => u.Active, ct);
+    var repositories = await db.ConnectedRepositories.CountAsync(ct);
+    var failures = await db.FailureEvents.CountAsync(ct);
+    var openTickets = await db.RepairTickets.CountAsync(
+        t => t.Status != TicketStatus.FixPushed && t.Status != TicketStatus.FixVerified
+             && t.Status != TicketStatus.Closed, ct);
+    var webhooks = await db.WebhookEndpoints.CountAsync(ct);
+
+    return Results.Ok(new AdminOverviewResponse(totalUsers, activeUsers, repositories, failures, openTickets, webhooks));
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/users", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    if (!await IsAdminAsync(user, db, ct))
+    {
+        return Results.Forbid();
+    }
+
+    var rows = await (from u in db.Users.AsNoTracking()
+                      let repositories = db.ConnectedRepositories.Count(r => r.OwnerUserId == u.Id)
+                      let tickets = db.RepairTickets.Count(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.OwnerUserId == u.Id))
+                      select new
+                      {
+                          u.Id,
+                          u.Email,
+                          u.DisplayName,
+                          u.IsAdmin,
+                          u.Active,
+                          u.CreatedAt,
+                          repositories,
+                          tickets
+                      }).OrderBy(x => x.Email).ToListAsync(ct);
+
+    return Results.Ok(rows.Select(x => new AdminUserResponse(
+        x.Id, x.Email, x.DisplayName, x.IsAdmin, x.Active, x.CreatedAt, x.repositories, x.tickets)));
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/users/{id:guid}/deactivate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    if (!await IsAdminAsync(user, db, ct))
+    {
+        return Results.Forbid();
+    }
+
+    var target = await db.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
+    if (target is null)
+    {
+        return Results.NotFound();
+    }
+
+    db.Entry(target).Property(u => u.Active).CurrentValue = false;
+    await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/users/{id:guid}/activate", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    if (!await IsAdminAsync(user, db, ct))
+    {
+        return Results.Forbid();
+    }
+
+    var target = await db.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
+    if (target is null)
+    {
+        return Results.NotFound();
+    }
+
+    db.Entry(target).Property(u => u.Active).CurrentValue = true;
+    await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+}).RequireAuthorization();
+
 app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(request.Url) || !IsAbsoluteHttpUrl(request.Url))
@@ -872,6 +977,9 @@ app.MapDelete("/api/webhooks/{id:guid}", async (Guid id, ClaimsPrincipal user, D
 }).RequireAuthorization();
 
 app.Run();
+
+static async Task<bool> IsAdminAsync(ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+    await db.Users.AsNoTracking().AnyAsync(u => u.Id == user.GetUserId() && u.IsAdmin, ct);
 
 static bool IsValidEmail(string? email)
 {
