@@ -17,6 +17,9 @@ public sealed record User
     /// <summary>When false the account cannot sign in; used by platform admins to suspend a tenant.</summary>
     public bool Active { get; init; } = true;
 
+    /// <summary>When false the daily digest worker skips this user entirely.</summary>
+    public bool DigestEnabled { get; init; } = true;
+
     public DateTimeOffset CreatedAt { get; init; }
 }
 

@@ -10,11 +10,11 @@ public sealed record UserResponse(Guid Id, string Email, string DisplayName);
 
 public sealed record LoginResponse(string Token, DateTimeOffset ExpiresAt, UserResponse User);
 
-public sealed record UpdateAccountRequest(string DisplayName);
+public sealed record UpdateAccountRequest(string DisplayName, bool? DigestEnabled = null);
 
 public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 
-public sealed record AccountResponse(Guid Id, string Email, string DisplayName, bool IsAdmin, bool Active, DateTimeOffset CreatedAt);
+public sealed record AccountResponse(Guid Id, string Email, string DisplayName, bool IsAdmin, bool Active, bool DigestEnabled, DateTimeOffset CreatedAt);
 
 public sealed record CreateRepositoryRequest(GitProvider Provider, string CloneUrl, string DefaultBranch, string? AppUrl = null, RepairMode RepairMode = RepairMode.DirectPush);
 

@@ -25,7 +25,7 @@ public sealed class DigestProcessor(
     public async Task<int> RunAsync(CancellationToken ct)
     {
         var window = DateTimeOffset.UtcNow.AddHours(-options.IntervalHours);
-        var users = await db.Users.AsNoTracking().Where(u => u.Active).ToListAsync(ct);
+        var users = await db.Users.AsNoTracking().Where(u => u.Active && u.DigestEnabled).ToListAsync(ct);
         var now = DateTimeOffset.UtcNow;
         var generated = 0;
 

@@ -38,6 +38,7 @@ public sealed class AccountTests : IAsyncLifetime
         Assert.Equal("acct-get@test.dev", account.Email);
         Assert.False(account.IsAdmin);
         Assert.True(account.Active);
+        Assert.True(account.DigestEnabled);
     }
 
     [Fact]
@@ -74,6 +75,30 @@ public sealed class AccountTests : IAsyncLifetime
         };
         blank.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         Assert.Equal(HttpStatusCode.BadRequest, (await _client.SendAsync(blank)).StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateDigestPreference_ReflectsImmediately()
+    {
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "acct-digest@test.dev", "Acct Digest");
+        var put = new HttpRequestMessage(HttpMethod.Put, "/api/account")
+        {
+            Content = JsonContent.Create(new { displayName = "Acct Digest", digestEnabled = false })
+        };
+        put.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var response = await _client.SendAsync(put);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var account = await response.Content.ReadFromJsonAsync<AccountResponse>(Helpers.ApiJson);
+        Assert.NotNull(account);
+        Assert.False(account.DigestEnabled);
+
+        var reenable = new HttpRequestMessage(HttpMethod.Put, "/api/account")
+        {
+            Content = JsonContent.Create(new { displayName = "Acct Digest", digestEnabled = true })
+        };
+        reenable.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var flipped = await (await _client.SendAsync(reenable)).Content.ReadFromJsonAsync<AccountResponse>(Helpers.ApiJson);
+        Assert.True(flipped!.DigestEnabled);
     }
 
     [Fact]

@@ -21,6 +21,7 @@ using DevSup.Infrastructure.HealthChecks;
 using DevSup.Infrastructure.Retention;
 using DevSup.Infrastructure.Security;
 using DevSup.Infrastructure.Webhooks;
+using DevSup.Infrastructure.Verification;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
@@ -105,6 +106,18 @@ builder.Services.AddSingleton<IAppUrlProber, HttpAppUrlProber>();
 builder.Services.AddScoped<AppHealthChecker>();
     builder.Services.AddScoped<AuditRecorder>();
 builder.Services.AddHostedService<AppHealthCheckWorker>();
+
+var verificationOptions = new VerificationOptions
+{
+    Enabled = !string.Equals(builder.Configuration["Verification:Enabled"], "false", StringComparison.OrdinalIgnoreCase),
+    IntervalSeconds = int.TryParse(builder.Configuration["Verification:IntervalSeconds"], out var verificationInterval) && verificationInterval >= 1 ? verificationInterval : 60,
+    ProbeDelayMinutes = int.TryParse(builder.Configuration["Verification:ProbeDelayMinutes"], out var verificationDelay) && verificationDelay >= 1 ? verificationDelay : 2,
+    WindowMinutes = int.TryParse(builder.Configuration["Verification:WindowMinutes"], out var verificationWindow) && verificationWindow >= 1 ? verificationWindow : 30,
+    ProbeTimeoutSeconds = int.TryParse(builder.Configuration["Verification:ProbeTimeoutSeconds"], out var verificationTimeout) && verificationTimeout >= 1 ? verificationTimeout : 10
+};
+builder.Services.AddSingleton(verificationOptions);
+builder.Services.AddScoped<VerificationProcessor>();
+builder.Services.AddHostedService<VerificationWorker>();
 
 var retentionOptions = new RetentionOptions
 {
@@ -286,7 +299,7 @@ app.MapGet("/api/account", async (ClaimsPrincipal user, DevSupDbContext db, Canc
 {
     var account = await db.Users.AsNoTracking()
         .SingleAsync(u => u.Id == user.GetUserId(), ct);
-    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.CreatedAt));
+    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.DigestEnabled, account.CreatedAt));
 }).RequireAuthorization();
 
 app.MapPut("/api/account", async (UpdateAccountRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
@@ -303,12 +316,17 @@ app.MapPut("/api/account", async (UpdateAccountRequest request, ClaimsPrincipal 
     }
 
     var before = account.DisplayName;
+    var beforeDigests = account.DigestEnabled;
     db.Entry(account).Property(u => u.DisplayName).CurrentValue = request.DisplayName.Trim();
+    if (request.DigestEnabled is not null && request.DigestEnabled.Value != beforeDigests)
+    {
+        db.Entry(account).Property(u => u.DigestEnabled).CurrentValue = request.DigestEnabled.Value;
+    }
     await db.SaveChangesAsync(ct);
     await audit.RecordAsync(account.Id, account.Email, "account.profileUpdate", "User",
         account.Id.ToString(), before: before, after: account.DisplayName, ct: ct);
 
-    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.CreatedAt));
+    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.DigestEnabled, account.CreatedAt));
 }).RequireAuthorization();
 
 app.MapPost("/api/account/password", async (ChangePasswordRequest request, ClaimsPrincipal user, DevSupDbContext db, IPasswordHasherService hasher, AuditRecorder audit, CancellationToken ct) =>

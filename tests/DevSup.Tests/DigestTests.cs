@@ -77,6 +77,29 @@ public sealed class DigestTests : IAsyncLifetime
         Assert.Contains("1 fix(es)", email.Subject);
     }
 
+    [Fact]
+    public async Task Digest_SkipsUserWhoOptedOut()
+    {
+        var doomed = await Helpers.LoginAndGetTokenAsync(_client, "digest-out@test.dev", "Opt Out");
+        var repo = await Helpers.CreateRepositoryAsync(_client, doomed, "https://github.com/acme/digest-out.git");
+        await SeedActivityAsync(repo, now: DateTimeOffset.UtcNow, openTickets: 1, fixedShas: 0);
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+            var user = await db.Users.SingleAsync(u => u.Email == "digest-out@test.dev");
+            db.Entry(user).Property(u => u.DigestEnabled).CurrentValue = false;
+            await db.SaveChangesAsync();
+        }
+
+        var generated = await RunDigestAsync(intervalHours: 24);
+        Assert.Equal(0, generated);
+
+        await using var scope2 = _factory.Services.CreateAsyncScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        Assert.False(await db2.EmailMessages.AsNoTracking().AnyAsync());
+    }
+
     private async Task<int> RunDigestAsync(int intervalHours)
     {
         await using var scope = _factory.Services.CreateAsyncScope();
