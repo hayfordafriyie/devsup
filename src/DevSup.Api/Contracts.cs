@@ -27,7 +27,10 @@ public sealed record RepositoryResponse(
     RepairMode RepairMode,
     bool? AppHealthy = null,
     DateTimeOffset? AppHealthCheckedAt = null,
-    string? AppHealthLastError = null);
+    string? AppHealthLastError = null,
+    bool Archived = false,
+    bool Owner = false,
+    DateTimeOffset? ArchivedAt = null);
 
 public sealed record IngestFailureRequest(
     Guid RepositoryId,
@@ -104,7 +107,8 @@ public sealed record RepositoryHealthRow(
     DateTimeOffset? AppHealthCheckedAt,
     string? AppHealthLastError,
     bool Paused,
-    DateTimeOffset? PausedAt);
+    DateTimeOffset? PausedAt,
+    bool Owner = false);
 
 public sealed record TicketSummary(
     int New,

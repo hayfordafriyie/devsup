@@ -50,6 +50,12 @@ public sealed record ConnectedRepository
 
     public DateTimeOffset? PausedAt { get; init; }
 
+    /// <summary>When true the repository is retired from the active surface: hidden from lists,
+    /// overview and digests, and skipped by every background pipeline. History is retained.</summary>
+    public bool Archived { get; init; }
+
+    public DateTimeOffset? ArchivedAt { get; init; }
+
     public DateTimeOffset ConnectedAt { get; init; }
 }
 

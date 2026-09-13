@@ -41,7 +41,7 @@ public sealed class RepairProcessor(
     {
         var tickets = await db.RepairTickets
             .Where(t => t.Status == TicketStatus.New && t.Category == FailureCategory.CodeError
-                && !db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && r.Paused))
+                && !db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && (r.Paused || r.Archived)))
             .OrderBy(t => t.UpdatedAt)
             .Take(batchSize)
             .ToListAsync(ct);

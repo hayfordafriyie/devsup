@@ -34,7 +34,7 @@ public sealed class DigestProcessor(
             var repoIds = await db.ConnectedRepositories.AsNoTracking()
                 .Where(r => (r.OwnerUserId == user.Id
                     || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == user.Id))
-                    && !r.Paused)
+                    && !r.Paused && !r.Archived)
                 .Select(r => r.Id)
                 .ToListAsync(ct);
             if (repoIds.Count == 0)

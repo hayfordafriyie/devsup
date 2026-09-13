@@ -39,6 +39,8 @@ public sealed class VerificationProcessor(DevSupDbContext db, IAppUrlProber prob
                                 join f in db.FailureEvents.AsNoTracking() on t.FailureEventId equals f.Id
                                 where t.Status == TicketStatus.FixPushed
                                     && r.AppUrl != null
+                                    && !r.Paused
+                                    && !r.Archived
                                     && t.UpdatedAt <= notBefore
                                     && t.UpdatedAt > deadline
                                 select new { Ticket = t, Repository = r, Failure = f })

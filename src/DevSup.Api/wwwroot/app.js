@@ -116,10 +116,15 @@
             var checked = row.paused
                 ? "since " + new Date(row.pausedAt).toLocaleString()
                 : (row.appHealthCheckedAt ? new Date(row.appHealthCheckedAt).toLocaleString() : "never");
-            var action = row.paused
-                ? '<button data-repo-resume="' + row.id + '" title="Resume monitoring">Resume</button>'
-                : '<button data-repo-pause="' + row.id + '" title="Pause monitoring">Pause</button>';
-            action += '<button data-repo-members="' + row.id + '" title="Manage team access">Members</button>';
+            var action = row.owner
+                ? (row.paused
+                    ? '<button data-repo-resume="' + row.id + '" title="Resume monitoring">Resume</button>'
+                    : '<button data-repo-pause="' + row.id + '" title="Pause monitoring">Pause</button>')
+                : "";
+            action += '<button data-repo-members="' + row.id + '" title="Team access">Members</button>';
+            if (row.owner) {
+                action += '<button data-repo-archive="' + row.id + '" title="Retire from active monitoring">Archive</button>';
+            }
             return "<tr>" +
                 "<td>" + escapeHtml(repoName(row.cloneUrl)) + "</td>" +
                 "<td><a href=\"" + escapeHtml(row.appUrl || "#") + "\" target=\"_blank\" rel=\"noopener\">" + escapeHtml(row.appUrl || "not configured") + "</a></td>" +
@@ -546,6 +551,26 @@
         renderEmails(page);
     }
 
+    async function loadArchived() {
+        var repos = await api("/api/repositories?archived=true");
+        renderArchived(repos);
+    }
+
+    function renderArchived(repos) {
+        var section = document.getElementById("archived-section");
+        var tbody = section.querySelector("tbody");
+        var empty = document.getElementById("archived-empty");
+        empty.hidden = repos.length !== 0;
+        tbody.innerHTML = repos.map(function (r) {
+            var when = r.archivedAt ? new Date(r.archivedAt).toLocaleString() : '<span class="muted">&mdash;</span>';
+            return "<tr>" +
+                "<td>" + escapeHtml(repoName(r.cloneUrl)) + "</td>" +
+                "<td>" + when + "</td>" +
+                '<td><button data-repo-unarchive="' + r.id + '" title="Restore to active monitoring">Restore</button></td>' +
+                "</tr>";
+        }).join("");
+    }
+
     async function load() {
         var overview = await api("/api/overview");
         var tickets = await api("/api/tickets");
@@ -565,6 +590,7 @@
         tokenInput.hidden = true;
         connectBtn.hidden = true;
         refreshBtn.hidden = false;
+        document.getElementById("archived-toggle").hidden = false;
     }
 
     connectBtn.addEventListener("click", function () {
@@ -578,6 +604,14 @@
 
     refreshBtn.addEventListener("click", function () {
         load().catch(function (e) { showError(e.message); });
+    });
+
+    document.getElementById("archived-toggle").addEventListener("click", function () {
+        var section = document.getElementById("archived-section");
+        section.hidden = !section.hidden;
+        if (!section.hidden) {
+            loadArchived().catch(function (e) { showError(e.message); });
+        }
     });
 
     document.addEventListener("click", function (event) {
@@ -602,6 +636,32 @@
             }).then(function (response) {
                 if (!response.ok) throw new Error("Failed to resume repository");
                 return load();
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-repo-archive]");
+        if (button) {
+            var archiveId = button.getAttribute("data-repo-archive");
+            if (window.confirm("Archive this repository? It will be hidden from the dashboard and monitoring stops. You can restore it later.")) {
+                fetch("/api/repositories/" + archiveId + "/archive", {
+                    method: "POST",
+                    headers: { Authorization: "Bearer " + token }
+                }).then(function (response) {
+                    if (!response.ok) throw new Error("Failed to archive repository");
+                    return load();
+                }).catch(function (e) { showError(e.message); });
+            }
+            return;
+        }
+        button = event.target.closest("[data-repo-unarchive]");
+        if (button) {
+            var unarchiveId = button.getAttribute("data-repo-unarchive");
+            fetch("/api/repositories/" + unarchiveId + "/unarchive", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to restore repository");
+                return loadArchived().then(function () { return load(); });
             }).catch(function (e) { showError(e.message); });
             return;
         }

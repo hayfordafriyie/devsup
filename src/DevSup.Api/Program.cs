@@ -754,20 +754,68 @@ app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsP
         repository.Id.ToString(), after: $"{request.CloneUrl} ({request.DefaultBranch})", ct: ct);
 
     return Results.Created($"/api/repositories/{repository.Id}",
-        new RepositoryResponse(repository.Id, repository.Provider.ToString(), repository.CloneUrl, repository.DefaultBranch, repository.AppUrl, repository.RepairMode, repository.AppHealthy, repository.AppHealthCheckedAt, repository.AppHealthLastError));
+        new RepositoryResponse(repository.Id, repository.Provider.ToString(), repository.CloneUrl, repository.DefaultBranch, repository.AppUrl, repository.RepairMode, repository.AppHealthy, repository.AppHealthCheckedAt, repository.AppHealthLastError, Owner: true));
 }).RequireAuthorization();
 
-app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct, bool archived = false) =>
 {
     var ownerId = user.GetUserId();
-    var repositories = await db.ConnectedRepositories
-        .AsNoTracking()
-        .Where(r => r.OwnerUserId == ownerId
-            || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))
-        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl, r.RepairMode, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError))
+    var query = db.ConnectedRepositories.AsNoTracking();
+    var repositories = await (archived
+            ? query.Where(r => r.Archived && r.OwnerUserId == ownerId)
+            : query.Where(r => !r.Archived
+                && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))))
+        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl, r.RepairMode, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Archived, r.OwnerUserId == ownerId, r.ArchivedAt))
         .ToListAsync(ct);
 
     return Results.Ok(repositories);
+}).RequireAuthorization();
+
+app.MapPost("/api/repositories/{id:guid}/archive", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var repository = await db.ConnectedRepositories
+        .FirstOrDefaultAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+    if (repository is null)
+    {
+        return Results.NotFound();
+    }
+    if (repository.Archived)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Repository is already archived.");
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    db.Entry(repository).Property(r => r.Archived).CurrentValue = true;
+    db.Entry(repository).Property(r => r.ArchivedAt).CurrentValue = now;
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "repository.archive", "ConnectedRepository",
+        repository.Id.ToString(), after: $"{repository.CloneUrl} archived", ct: ct);
+
+    return Results.Ok(new { repositoryId = repository.Id, archived = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/repositories/{id:guid}/unarchive", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var repository = await db.ConnectedRepositories
+        .FirstOrDefaultAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
+    if (repository is null)
+    {
+        return Results.NotFound();
+    }
+    if (!repository.Archived)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "Repository is not archived.");
+    }
+
+    db.Entry(repository).Property(r => r.Archived).CurrentValue = false;
+    db.Entry(repository).Property(r => r.ArchivedAt).CurrentValue = null;
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(ownerId, user.Identity?.Name ?? "", "repository.unarchive", "ConnectedRepository",
+        repository.Id.ToString(), after: $"{repository.CloneUrl} restored", ct: ct);
+
+    return Results.Ok(new { repositoryId = repository.Id, archived = false });
 }).RequireAuthorization();
 
 app.MapPost("/api/repositories/{id:guid}/pause", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
@@ -1053,6 +1101,12 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest http
             detail: "Repository monitoring is paused — unpause it before ingesting failures.");
     }
 
+    if (repository.Archived)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict,
+            detail: "Repository is archived — restore it before ingesting failures.");
+    }
+
     var failure = new FailureEvent
     {
         Id = Guid.NewGuid(),
@@ -1171,7 +1225,7 @@ app.MapGet("/api/tickets", async (Guid? repositoryId, ClaimsPrincipal user, DevS
     var tickets = (await (
             from t in db.RepairTickets.AsNoTracking()
             join f in db.FailureEvents.AsNoTracking() on t.FailureEventId equals f.Id
-            where db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId
+            where db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && !r.Archived
                 && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
             select new { Ticket = t, Failure = f }).ToListAsync(ct))
         .Where(x => repositoryId is null || x.Ticket.RepositoryId == repositoryId)
@@ -1298,14 +1352,14 @@ app.MapGet("/api/overview", async (ClaimsPrincipal user, DevSupDbContext db, Can
 
     var repositories = await db.ConnectedRepositories
         .AsNoTracking()
-        .Where(r => r.OwnerUserId == ownerId
-            || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))
-        .Select(r => new RepositoryHealthRow(r.Id, r.CloneUrl, r.AppUrl, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Paused, r.PausedAt))
+        .Where(r => !r.Archived
+            && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
+        .Select(r => new RepositoryHealthRow(r.Id, r.CloneUrl, r.AppUrl, r.AppHealthy, r.AppHealthCheckedAt, r.AppHealthLastError, r.Paused, r.PausedAt, r.OwnerUserId == ownerId))
         .ToListAsync(ct);
 
     var tickets = await db.RepairTickets
         .AsNoTracking()
-        .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId
+        .Where(t => db.ConnectedRepositories.Any(r => r.Id == t.RepositoryId && !r.Archived
             && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))))
         .ToListAsync(ct);
 
@@ -1338,7 +1392,7 @@ app.MapGet("/api/failures", async (ClaimsPrincipal user, DevSupDbContext db, Can
         from f in db.FailureEvents.AsNoTracking()
         join t in db.RepairTickets.AsNoTracking() on f.Id equals t.FailureEventId into tj
         from t in tj.DefaultIfEmpty()
-        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId
+        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId && !r.Archived
                 && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
         select new { Failure = f, Ticket = t };
     if (repositoryId is not null)
@@ -1391,7 +1445,7 @@ app.MapGet("/api/failures/export", async (ClaimsPrincipal user, DevSupDbContext 
         from f in db.FailureEvents.AsNoTracking()
         join t in db.RepairTickets.AsNoTracking() on f.Id equals t.FailureEventId into tj
         from t in tj.DefaultIfEmpty()
-        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId
+        where db.ConnectedRepositories.Any(r => r.Id == f.RepositoryId && !r.Archived
                 && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)))
         select new { Failure = f, Ticket = t };
     if (repositoryId is not null)

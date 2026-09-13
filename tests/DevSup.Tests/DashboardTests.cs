@@ -147,5 +147,12 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("repo-leave", html2);
         Assert.Contains("\"/api/repositories/\" + transferRepo + \"/transfer\"", js);
         Assert.Contains("\"/api/repositories/\" + leaveRepo + \"/leave\"", js);
+        Assert.Contains("archived-section", html2);
+        Assert.Contains("archived-toggle", html2);
+        Assert.Contains("data-repo-archive", js);
+        Assert.Contains("data-repo-unarchive", js);
+        Assert.Contains("loadArchived", js);
+        Assert.Contains("\"/api/repositories/\" + archiveId + \"/archive\"", js);
+        Assert.Contains("\"/api/repositories/\" + unarchiveId + \"/unarchive\"", js);
     }
 }

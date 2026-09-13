@@ -13,6 +13,7 @@
             <input id="token" type="password" placeholder="Paste your API token" autocomplete="off" />
             <button id="connect">Connect</button>
             <button id="refresh" hidden>Refresh</button>
+            <button id="archived-toggle" hidden>Archived</button>
             <button id="admin-toggle" hidden>Admin console</button>
             <button id="preferences-toggle" hidden>Preferences</button>
             <span id="session-user"></span>
@@ -37,6 +38,21 @@
                 </thead>
                 <tbody></tbody>
             </table>
+        </section>
+
+        <section id="archived-section" class="panel" hidden>
+            <h2>Archived repositories</h2>
+            <table id="archived-repositories">
+                <thead>
+                    <tr>
+                        <th>Repository</th>
+                        <th>Archived</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            <p id="archived-empty" class="muted" hidden>No archived repositories.</p>
         </section>
 
         <section id="repo-members-panel" class="panel" hidden>
