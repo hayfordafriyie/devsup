@@ -5,11 +5,12 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.3** — on top of v0.2 (SQLite persistence, JWT accounts, connected
-> repositories, ingest triage, tickets), emails now flow through an **outbox worker that
-> delivers via SMTP with retries**, GitHub OAuth can **link an account and store an
-> encrypted access token**, and every failure produces an email tailored to whether it is
-> (or is not) a code error. 29 tests passing.
+> Project status: **v0.4** — on top of v0.3 (SMTP outbox delivery, GitHub OAuth with
+> encrypted tokens, not-a-code-error emails) and v0.2 (SQLite persistence, JWT accounts,
+> connected repositories, ingest triage, tickets), the **repair agent** now drives the
+> full investigate → patch → commit → push loop: it clones the connected repo with the
+> owner's token, applies a safe template repair, pushes the fix, records the commit SHA,
+> and emails at every step. 41 tests passing.
 
 ---
 
@@ -157,12 +158,37 @@ devsup/
 - `ConnectedRepositories` — provider, clone URL (unique per user), branch, optional app URL
 - `AiModelKeyBindings` — user, provider, model, encrypted key
 - `FailureEvents` — method, path, status, request/response payload, exception, stack, timestamp
-- `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA
+- `RepairTickets` — category, kind, status, analysis, patch summary, commit SHA, last agent error
 - `EmailMessages` — outbox (to, subject, html body, sent, created at)
 
 Every table is mapped in `DevSup.Infrastructure/Persistence/DevSupDbContext.cs` with the
-schema shipped as EF Core migrations (`InitialCreate`, then
-`AddEmailOutboxRetriesAndOAuthTokens`).
+schema shipped as EF Core migrations (`InitialCreate`,
+`AddEmailOutboxRetriesAndOAuthTokens`, `AddRepairTicketLastError`).
+
+### The repair agent (v0.4)
+
+A background worker (`DevSup.Agent/Repair/RepairWorker`) sweeps on an interval (default
+20 s, configurable under `Repairing:`) and hands each **New, code-error** ticket to
+`RepairProcessor`, which walks it through:
+
+1. **Adopt** — only tickets still `New` are picked up (idempotent; one claim per ticket).
+2. **Investigate** — resolves the owner's linked provider token (decrypted in memory
+   only), clones the connected repo into a temp workspace, and runs `IRepairProvider`.
+3. **Patch** — the default `HeuristicRepairProvider` reads `.devsup/repairs.json` from
+   the checked-out repo and applies a single, *verified-verbatim* string replacement in
+   the targeted file (path-traversal guarded). It refuses ambiguous, missing, or
+   unparsable repairs rather than risk a broken diff. This is the seam where a real AI
+   provider slots in (v0.5).
+4. **Commit & push** — the change is committed and pushed to the repo's default branch
+   under the token the user linked during OAuth (`https://x-access-token:<token>` on the
+   clone URL, never persisted or logged). The short checkout is cleaned up afterwards.
+5. **Report** — the ticket moves to `FixPushed` (with commit SHA + patch summary) or
+   `NeedsHumanReview` (with the agent's analysis), and the email outbox gets a
+   "fix pushed" or "needs your review" message.
+
+Security: only https clone URLs are eligible, the resolved file must stay inside the
+workspace, and no failure is auto-retried forever — anything unexpected lands in
+`NeedsHumanReview` with a `LastError`.
 
 ### Emails (outbox + SMTP)
 
@@ -195,7 +221,7 @@ dotnet run --project src/DevSup.Api
 The API exposes `/` as a health check and OpenAPI in Development. SQLite migrations run
 automatically at startup (a `devsup.db` file is created next to the repo).
 
-### API endpoints (v0.2)
+### API endpoints
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -210,7 +236,9 @@ automatically at startup (a `devsup.db` file is created next to the repo).
 | `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
 
 Secrets at rest (GitHub access tokens) are encrypted with AES-256-GCM under
-`Security:DataProtectionKey`. JWT settings live under `Jwt`. Override any of these via
+`Security:DataProtectionKey`. JWT settings live under `Jwt`. Agent cadence and the commit
+identity used for pushes live under `Repairing:` (`IntervalSeconds`, `BatchSize`,
+`GitUserName`, `GitUserEmail`). Override any of these via
 configuration/environment in a real deployment — the checked-in values are for
 development only.
 
@@ -231,7 +259,7 @@ push/PR to `master`.
 - **v0.1** — solution scaffold, domain model, failure classifier + tests
 - **v0.2** *(done)* — SQLite persistence + migrations, JWT accounts, connect repo, ingest endpoint, classifier triage, tickets, email outbox
 - **v0.3** *(done)* — SMTP outbox delivery with retries, GitHub OAuth + encrypted token storage, not-a-code-error emails
-- **v0.4** — AI repair loop: investigate → patch → commit → push, status updates, "fixed" emails
+- **v0.4** *(done)* — agent repair loop: investigate → template patch → commit → push, ticket status updates, "fixed"/"needs review" emails
 - **v0.5** — BYO AI keys (Claude/Gemini/DeepSeek/OpenAI/Ollama), GitLab support, key management API
 - **v0.6** — consumer versioning of the middleware, payload sanitization hardening, PR-based (opt-in) flow
 - **v0.7** — multi-repo, dashboards, Slack/webhook notifications, external app-URL checks
@@ -240,4 +268,4 @@ push/PR to `master`.
 
 Built with **.NET 10**, **ASP.NET Core**, **EF Core + SQLite** (dev; PostgreSQL planned),
 **JWT auth (PBKDF2)**, **AES-256-GCM secret encryption**, **GitHub OAuth**, **SMTP**,
-**xUnit**, and **GitHub Actions**.
+**the git CLI for agent pushes**, **xUnit**, and **GitHub Actions**.
