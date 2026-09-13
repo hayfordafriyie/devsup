@@ -2360,6 +2360,149 @@ app.MapPut("/api/notification-preferences", async (NotificationPreferenceRequest
     return Results.Ok(new NotificationPreferenceResponse(existing.RepositoryId, repo.CloneUrl, existing.EmailEnabled, mutedList, existing.UpdatedAt));
 }).RequireAuthorization();
 
+app.MapGet("/api/notification-preferences/export", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var rows = await (from p in db.NotificationPreferences.AsNoTracking()
+                      join r in db.ConnectedRepositories.AsNoTracking() on p.RepositoryId equals r.Id
+                      where p.UserId == ownerId
+                      orderby r.CloneUrl
+                      select new { p.RepositoryId, r.CloneUrl, p.EmailEnabled, p.MutedEmailEvents })
+        .ToListAsync(ct);
+
+    var csv = new StringBuilder();
+    csv.AppendLine("repositoryId,cloneUrl,emailEnabled,mutedEvents");
+    foreach (var row in rows)
+    {
+        var muted = string.Join(';', Enumerable.Range(0, 8)
+            .Where(i => (row.MutedEmailEvents & (1 << i)) != 0)
+            .Select(i => ((WebhookEvent)i).ToString()));
+        csv.Append(CsvEscape(row.RepositoryId.ToString())).Append(',');
+        csv.Append(CsvEscape(row.CloneUrl)).Append(',');
+        csv.Append(row.EmailEnabled ? "true" : "false").Append(',');
+        csv.AppendLine(CsvEscape(muted));
+    }
+
+    var bytes = Encoding.UTF8.GetBytes(csv.ToString());
+    return Results.File(bytes, "text/csv", $"devsup-notification-preferences-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+}).RequireAuthorization();
+
+app.MapPost("/api/notification-preferences/import", async (HttpRequest httpRequest, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    using var reader = new StreamReader(httpRequest.Body, Encoding.UTF8);
+    var text = await reader.ReadToEndAsync(ct);
+    var rows = ParseCsv(text);
+
+    var updated = 0;
+    var skipped = 0;
+    var errors = new List<string>();
+
+    var accessibleRepoIds = (await db.ConnectedRepositories.AsNoTracking()
+            .Where(r => r.OwnerUserId == ownerId
+                || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId))
+            .Select(r => r.Id)
+            .ToListAsync(ct))
+        .ToHashSet();
+    var existing = await db.NotificationPreferences
+        .Where(p => p.UserId == ownerId)
+        .ToListAsync(ct);
+
+    var line = 0;
+    foreach (var row in rows)
+    {
+        line++;
+        if (row.Length > 0 && string.Equals(row[0].Trim(), "repositoryId", StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+        if (row.Length == 0 || row.All(string.IsNullOrWhiteSpace))
+        {
+            continue;
+        }
+        if (updated + skipped >= 1000)
+        {
+            errors.Add("Import truncated at 1000 rows.");
+            break;
+        }
+
+        if (!Guid.TryParse(row[0].Trim(), out var repositoryId) || !accessibleRepoIds.Contains(repositoryId))
+        {
+            skipped++;
+            errors.Add($"Line {line}: unknown or inaccessible repository '{row[0].Trim()}'.");
+            continue;
+        }
+
+        var emailEnabled = true;
+        if (row.Length > 2 && !string.IsNullOrWhiteSpace(row[2]))
+        {
+            var rawEnabled = row[2].Trim();
+            if (rawEnabled is "1")
+            {
+                emailEnabled = true;
+            }
+            else if (rawEnabled is "0")
+            {
+                emailEnabled = false;
+            }
+            else if (!bool.TryParse(rawEnabled, out emailEnabled))
+            {
+                skipped++;
+                errors.Add($"Line {line}: invalid emailEnabled '{rawEnabled}'.");
+                continue;
+            }
+        }
+
+        var muted = 0;
+        var mutedInvalid = false;
+        if (row.Length > 3 && !string.IsNullOrWhiteSpace(row[3]))
+        {
+            foreach (var raw in row[3].Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!Enum.TryParse<WebhookEvent>(raw, ignoreCase: true, out var parsed))
+                {
+                    skipped++;
+                    errors.Add($"Line {line}: unknown event '{raw}'.");
+                    mutedInvalid = true;
+                    break;
+                }
+                muted |= 1 << (int)parsed;
+            }
+        }
+        if (mutedInvalid)
+        {
+            continue;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var preference = existing.FirstOrDefault(p => p.RepositoryId == repositoryId);
+        if (preference is null)
+        {
+            preference = new NotificationPreference
+            {
+                Id = Guid.NewGuid(),
+                UserId = ownerId,
+                RepositoryId = repositoryId,
+                EmailEnabled = emailEnabled,
+                MutedEmailEvents = muted,
+                UpdatedAt = now
+            };
+            db.NotificationPreferences.Add(preference);
+            existing.Add(preference);
+        }
+        else
+        {
+            db.Entry(preference).Property(p => p.EmailEnabled).CurrentValue = emailEnabled;
+            db.Entry(preference).Property(p => p.MutedEmailEvents).CurrentValue = muted;
+            db.Entry(preference).Property(p => p.UpdatedAt).CurrentValue = now;
+        }
+        updated++;
+    }
+
+    await db.SaveChangesAsync(ct);
+    return Results.Ok(new NotificationPreferenceImportResult(updated, skipped, errors));
+}).RequireAuthorization();
+
 app.MapGet("/api/emails", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct,
     int page = 1, int pageSize = 20, bool? sent = null) =>
 {
@@ -2428,6 +2571,69 @@ static string CsvEscape(string? value)
     }
 
     return value;
+}
+
+static List<string[]> ParseCsv(string text)
+{
+    var rows = new List<string[]>();
+    var fields = new List<string>();
+    var current = new StringBuilder();
+    var inQuotes = false;
+
+    for (var i = 0; i < text.Length; i++)
+    {
+        var c = text[i];
+        if (inQuotes)
+        {
+            if (c == '"')
+            {
+                if (i + 1 < text.Length && text[i + 1] == '"')
+                {
+                    current.Append('"');
+                    i++;
+                }
+                else
+                {
+                    inQuotes = false;
+                }
+            }
+            else
+            {
+                current.Append(c);
+            }
+            continue;
+        }
+
+        switch (c)
+        {
+            case '"':
+                inQuotes = true;
+                break;
+            case ',':
+                fields.Add(current.ToString());
+                current.Clear();
+                break;
+            case '\r':
+                break;
+            case '\n':
+                fields.Add(current.ToString());
+                current.Clear();
+                rows.Add(fields.ToArray());
+                fields.Clear();
+                break;
+            default:
+                current.Append(c);
+                break;
+        }
+    }
+
+    if (current.Length > 0 || fields.Count > 0)
+    {
+        fields.Add(current.ToString());
+        rows.Add(fields.ToArray());
+    }
+
+    return rows;
 }
 
 static bool IsValidEmail(string? email)

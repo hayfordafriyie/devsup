@@ -109,6 +109,87 @@ public sealed class NotificationPreferencesTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, (await _client.SendAsync(missing)).StatusCode);
     }
 
+    [Fact]
+    public async Task Preferences_ExportCsv_RoundTripsThroughImport()
+    {
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "pref-export@test.dev", "Pref Export");
+        var a = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/pref-export-a.git");
+        var b = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/pref-export-b.git");
+        await PutPreferenceAsync(token, a, emailEnabled: false, mutedEvents: new[] { "NeedsHumanReview", "FixPushed" });
+        await PutPreferenceAsync(token, b, emailEnabled: true);
+
+        var export = await GetAsync("/api/notification-preferences/export", token);
+        Assert.Equal("text/csv", export.Content.Headers.ContentType!.MediaType);
+        var csv = await export.Content.ReadAsStringAsync();
+        Assert.StartsWith("repositoryId,cloneUrl,emailEnabled,mutedEvents", csv);
+        Assert.Contains(a.ToString(), csv);
+        Assert.Contains("false", csv);
+        Assert.Contains("FixPushed;NeedsHumanReview", csv);
+
+        // Flip everything on, then restore from the export.
+        await PutPreferenceAsync(token, a, emailEnabled: true, mutedEvents: Array.Empty<string>());
+        var result = await ImportAsync(token, csv);
+        Assert.True(result.Skipped == 0, string.Join(" | ", result.Errors));
+        Assert.True(result.Updated >= 2);
+
+        var rows = await GetPreferencesAsync(token);
+        var restored = Assert.Single(rows, r => r.RepositoryId == a);
+        Assert.False(restored.EmailEnabled);
+        Assert.Contains("NeedsHumanReview", restored.MutedEvents);
+        Assert.Contains("FixPushed", restored.MutedEvents);
+    }
+
+    [Fact]
+    public async Task Preferences_Import_SkipsInaccessibleAndInvalidRows()
+    {
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "pref-import@test.dev", "Pref Import");
+        var repo = await Helpers.CreateRepositoryAsync(_client, token, "https://github.com/acme/pref-import.git");
+
+        var otherToken = await Helpers.LoginAndGetTokenAsync(_client, "pref-import-x@test.dev", "Pref Import X");
+        var foreign = await Helpers.CreateRepositoryAsync(_client, otherToken, "https://github.com/acme/pref-import-x.git");
+
+        var csv = "repositoryId,cloneUrl,emailEnabled,mutedEvents\n" +
+                  $"{repo},own,false,FixPushed\n" +
+                  $"{foreign},foreign,true,\n" +
+                  $"{repo},own,true,NotARealEvent\n";
+
+        var result = await ImportAsync(token, csv);
+        Assert.Equal(1, result.Updated);
+        Assert.Equal(2, result.Skipped);
+        Assert.NotEmpty(result.Errors);
+
+        var rows = await GetPreferencesAsync(token);
+        var applied = Assert.Single(rows, r => r.RepositoryId == repo);
+        Assert.False(applied.EmailEnabled);
+        Assert.Contains("FixPushed", applied.MutedEvents);
+    }
+
+    private async Task<HttpResponseMessage> GetAsync(string path, string token)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return await _client.SendAsync(request);
+    }
+
+    private async Task<List<NotificationPreferenceResponse>> GetPreferencesAsync(string token)
+    {
+        var response = await GetAsync("/api/notification-preferences", token);
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<List<NotificationPreferenceResponse>>(Helpers.ApiJson))!;
+    }
+
+    private async Task<NotificationPreferenceImportResult> ImportAsync(string token, string csv)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/notification-preferences/import")
+        {
+            Content = new StringContent(csv, Encoding.UTF8, "text/csv")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var response = await _client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return (await response.Content.ReadFromJsonAsync<NotificationPreferenceImportResult>(Helpers.ApiJson))!;
+    }
+
     private async Task<NotificationPreferenceResponse> PutPreferenceAsync(string token, Guid repositoryId, bool? emailEnabled = null, string[]? mutedEvents = null)
     {
         var request = new HttpRequestMessage(HttpMethod.Put, "/api/notification-preferences")

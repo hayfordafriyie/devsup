@@ -233,6 +233,8 @@ public sealed record WebhookDeliveryPage(
 
 public sealed record WebhookRetryAllResponse(Guid WebhookId, int Requeued);
 
+public sealed record NotificationPreferenceImportResult(int Updated, int Skipped, IReadOnlyList<string> Errors);
+
 public sealed record NotificationPreferenceRequest(
     Guid RepositoryId,
     bool? EmailEnabled = null,

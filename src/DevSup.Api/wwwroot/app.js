@@ -606,6 +606,35 @@
         URL.revokeObjectURL(url);
     }
 
+    async function exportPreferences() {
+        var response = await fetch("/api/notification-preferences/export", {
+            headers: { Authorization: "Bearer " + token }
+        });
+        if (!response.ok) throw new Error("Failed to export preferences");
+        var blob = await response.blob();
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.href = url;
+        link.download = "devsup-notification-preferences.csv";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    function importPreferences(file) {
+        return file.text().then(function (text) {
+            return fetch("/api/notification-preferences/import", {
+                method: "POST",
+                headers: { "Content-Type": "text/csv", Authorization: "Bearer " + token },
+                body: text
+            });
+        }).then(function (response) {
+            if (!response.ok) throw new Error("Failed to import preferences");
+            return loadPreferences();
+        });
+    }
+
     var PREF_EVENTS = [
         { event: "failureDetected", label: "Error detected" },
         { event: "notCodeError", label: "Not a code error" },
@@ -1110,6 +1139,17 @@
 
     document.getElementById("export-fleet").addEventListener("click", function () {
         exportFleetCsv().catch(function (e) { showError(e.message); });
+    });
+
+    document.getElementById("export-preferences").addEventListener("click", function () {
+        exportPreferences().catch(function (e) { showError(e.message); });
+    });
+
+    document.getElementById("import-preferences").addEventListener("change", function () {
+        if (this.files && this.files[0]) {
+            importPreferences(this.files[0]).catch(function (e) { showError(e.message); });
+            this.value = "";
+        }
     });
 
     var form = document.getElementById("webhook-form");
