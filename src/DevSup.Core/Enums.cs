@@ -55,6 +55,9 @@ public enum TicketStatus
     Triaged,
     Investigating,
     PatchProposed,
+
+    /// <summary>Fix landed on a feature branch and is awaiting human review/merge via a pull request.</summary>
+    FixPendingReview,
     FixPushed,
     FixVerified,
     Closed,

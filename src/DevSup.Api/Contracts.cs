@@ -42,6 +42,7 @@ public sealed record TicketResponse(
     string? Analysis,
     string? PatchSummary,
     string? CommitSha,
+    string? PullRequestUrl,
     DateTimeOffset UpdatedAt);
 
 public sealed record AiKeyRequest(AiModelProvider Provider, string Model, string Key);

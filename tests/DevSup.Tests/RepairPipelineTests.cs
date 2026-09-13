@@ -26,6 +26,7 @@ public sealed class FakeGitAdapter : IGitAdapter
 
     public int CloneCount { get; private set; }
     public List<(string Message, string Sha)> Pushes { get; } = [];
+    public List<(string Branch, string Message, string Sha)> PushedBranches { get; } = [];
 
     private static readonly string OrderHandlerSource = """
         public static class OrderHandler
@@ -76,6 +77,12 @@ public sealed class FakeGitAdapter : IGitAdapter
     public Task<string> CommitAndPushAsync(string workingDirectory, string message, string user, string email, CancellationToken ct)
     {
         Pushes.Add((message, FakeSha));
+        return Task.FromResult(FakeSha);
+    }
+
+    public Task<string> CommitAndPushToBranchAsync(string workingDirectory, string branch, string message, string user, string email, CancellationToken ct)
+    {
+        PushedBranches.Add((branch, message, FakeSha));
         return Task.FromResult(FakeSha);
     }
 

@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
 using DevSup.Agent.Ai;
 using DevSup.Agent.Repair;
 using DevSup.Api;
@@ -154,5 +156,108 @@ public sealed class AiRepairPipelineTests : IAsyncLifetime
 
         Assert.Equal(0, _factory.AiGenerator.CallCount);
         Assert.Equal(TicketStatus.FixPushed, await ReadStatusAsync(ticketId));
+    }
+
+    [Fact]
+    public async Task RepairLoop_PullRequestMode_OpensPullRequestAndEmailsReviewLink()
+    {
+        _factory.AiGenerator.Result = GoodSuggestion;
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "ai-pr@example.com", "AI PR");
+        var repositoryId = await CreatePullRequestRepositoryAsync(token, "https://github.com/acme/healme.git");
+        var ticketId = await IngestAsync(repositoryId, token);
+
+        await using var setupScope = _factory.Services.CreateAsyncScope();
+        var db = setupScope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var owner = await db.Users.SingleAsync(u => u.Email == "ai-pr@example.com");
+        var protector = setupScope.ServiceProvider.GetRequiredService<IKeyProtector>();
+        db.OAuthTokens.Add(new OAuthToken
+        {
+            Id = Guid.NewGuid(),
+            UserId = owner.Id,
+            Provider = GitProvider.GitHub,
+            EncryptedAccessToken = protector.Protect("gho_ai_pr_token"),
+            Scope = "repo",
+            LinkedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var processor = scope.ServiceProvider.GetRequiredService<RepairProcessor>();
+        await processor.ProcessPendingAsync(10, CancellationToken.None);
+
+        Assert.Equal(TicketStatus.FixPendingReview, await ReadStatusAsync(ticketId));
+        Assert.Single(_factory.PullRequests.Opened);
+
+        var opened = _factory.PullRequests.Opened[0];
+        Assert.Equal(GitProvider.GitHub, opened.Provider);
+        Assert.Contains("https://github.com/acme/healme.git", opened.CloneUrl);
+        Assert.Equal("main", opened.TargetBranch);
+        Assert.StartsWith("devsup/repair/", opened.SourceBranch);
+
+        await using var checkScope = _factory.Services.CreateAsyncScope();
+        var checkDb = checkScope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var ticket = await checkDb.RepairTickets.SingleAsync(t => t.Id == ticketId);
+        Assert.Equal(FakePullRequestGateway.FakeUrl, ticket.PullRequestUrl);
+        Assert.Equal(FakeGitAdapter.FakeSha, ticket.CommitSha);
+
+        var email = await checkDb.EmailMessages.FirstAsync(m => m.To == "ai-pr@example.com" && m.Subject.Contains("pull request opened"));
+        Assert.Contains("pull request opened for", email.Subject);
+        Assert.Contains(FakePullRequestGateway.FakeUrl, email.HtmlBody);
+    }
+
+    [Fact]
+    public async Task RepairLoop_PullRequestMode_WhenGatewayFails_HandsOffToHuman()
+    {
+        _factory.AiGenerator.Result = GoodSuggestion;
+        _factory.PullRequests.ThrowOnNextOpen = true;
+
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "ai-prfail@example.com", "AI PR Fail");
+        var repositoryId = await CreatePullRequestRepositoryAsync(token, "https://github.com/acme/healme.git");
+        var ticketId = await IngestAsync(repositoryId, token);
+
+        await using var setupScope = _factory.Services.CreateAsyncScope();
+        var db = setupScope.ServiceProvider.GetRequiredService<DevSupDbContext>();
+        var owner = await db.Users.SingleAsync(u => u.Email == "ai-prfail@example.com");
+        var protector = setupScope.ServiceProvider.GetRequiredService<IKeyProtector>();
+        db.OAuthTokens.Add(new OAuthToken
+        {
+            Id = Guid.NewGuid(),
+            UserId = owner.Id,
+            Provider = GitProvider.GitHub,
+            EncryptedAccessToken = protector.Protect("gho_ai_pr_fail_token"),
+            Scope = "repo",
+            LinkedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var processor = scope.ServiceProvider.GetRequiredService<RepairProcessor>();
+        await processor.ProcessPendingAsync(10, CancellationToken.None);
+
+        Assert.Equal(TicketStatus.NeedsHumanReview, await ReadStatusAsync(ticketId));
+
+        await using var checkScope = _factory.Services.CreateAsyncScope();
+        var ticket = await checkScope.ServiceProvider.GetRequiredService<DevSupDbContext>()
+            .RepairTickets.SingleAsync(t => t.Id == ticketId);
+        Assert.Contains("Pull request could not be opened", ticket.Analysis);
+    }
+
+    private async Task<Guid> CreatePullRequestRepositoryAsync(string token, string cloneUrl)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/repositories")
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { provider = "github", cloneUrl, defaultBranch = "main", repairMode = "pullRequest" }),
+                Encoding.UTF8,
+                "application/json")
+        };
+        request.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        var response = await _client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var repository = await response.Content.ReadFromJsonAsync<RepositoryResponse>(Helpers.ApiJson);
+        Assert.NotNull(repository);
+        return repository.Id;
     }
 }

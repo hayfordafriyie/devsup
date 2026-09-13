@@ -1,6 +1,7 @@
 namespace DevSup.Agent.Repair;
 
 using DevSup.Agent.Git;
+using DevSup.Agent.PullRequests;
 using DevSup.Core;
 using DevSup.Core.Models;
 using DevSup.Infrastructure.Persistence;
@@ -29,6 +30,7 @@ public sealed class RepairProcessor(
     IGitAdapter git,
     IRepairProvider provider,
     AiRepairProvider aiRepair,
+    IPullRequestGateway pullRequests,
     IKeyProtector protector,
     RepairWorkerOptions options,
     ILogger<RepairProcessor> logger)
@@ -96,7 +98,15 @@ public sealed class RepairProcessor(
 
                 if (proposal.HasPatch && proposal.RelativeFilePath is not null)
                 {
-                    await ApplyAndPush(ticket, ticketEntry, failure, proposal, workspace, ct);
+                    if (repository.RepairMode == RepairMode.PullRequest)
+                    {
+                        await OpenPullRequestAsync(ticket, ticketEntry, failure, repository, token, proposal, workspace, ct);
+                    }
+                    else
+                    {
+                        await ApplyAndPush(ticket, ticketEntry, failure, proposal, workspace, ct);
+                    }
+
                     await EnqueueEmailAsync(ticket, failure, repository, pushed: true, ct);
                 }
                 else
@@ -137,6 +147,62 @@ public sealed class RepairProcessor(
         }
 
         return handled;
+    }
+
+    private async Task OpenPullRequestAsync(
+        RepairTicket ticket,
+        EntityEntry<RepairTicket> entry,
+        FailureEvent failure,
+        ConnectedRepository repository,
+        string accessToken,
+        RepairProposal proposal,
+        string workspace,
+        CancellationToken ct)
+    {
+        EnsureWithinWorkspace(workspace, proposal.RelativeFilePath!);
+        var fullPath = Path.GetFullPath(Path.Combine(workspace, proposal.RelativeFilePath!));
+        var parent = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrEmpty(parent))
+        {
+            Directory.CreateDirectory(parent);
+        }
+        await File.WriteAllTextAsync(fullPath, proposal.RepairedContent ?? string.Empty, ct);
+
+        var commitMessage = proposal.Summary ?? $"DevSup: auto-repair for {failure.Method} {failure.Path}";
+        var branch = $"devsup/repair/{ticket.Id:N}";
+        var sha = await git.CommitAndPushToBranchAsync(workspace, branch, commitMessage, options.GitUserName, options.GitUserEmail, ct);
+
+        var prTitle = $"DevSup: auto-repair for {failure.Method} {failure.Path}";
+        var prBody = proposal.Summary ?? "Automatic repair produced by DevSup. Please review and merge.";
+
+        try
+        {
+            var prUrl = await pullRequests.OpenAsync(
+                repository.Provider, repository.CloneUrl, branch, repository.DefaultBranch,
+                prTitle, prBody, accessToken, ct);
+
+            entry.Property(t => t.Status).CurrentValue = TicketStatus.FixPendingReview;
+            entry.Property(t => t.PatchSummary).CurrentValue = proposal.Summary;
+            entry.Property(t => t.CommitSha).CurrentValue = sha;
+            entry.Property(t => t.PullRequestUrl).CurrentValue = prUrl;
+            entry.Property(t => t.Analysis).CurrentValue = proposal.Analysis;
+            entry.Property(t => t.LastError).CurrentValue = null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "PR open failed for ticket {TicketId}; handing off for manual review", ticket.Id);
+
+            // Opt-in PR repositories must never be silently patched on the default
+            // branch: if the pull request cannot be opened we hand the ticket to a
+            // human instead of downgrading to a direct push.
+            entry.Property(t => t.Status).CurrentValue = TicketStatus.NeedsHumanReview;
+            entry.Property(t => t.PatchSummary).CurrentValue = proposal.Summary;
+            entry.Property(t => t.CommitSha).CurrentValue = sha;
+            entry.Property(t => t.Analysis).CurrentValue = $"Pull request could not be opened: {ex.Message}";
+            entry.Property(t => t.LastError).CurrentValue = $"PR failed: {ex.Message}";
+        }
+
+        entry.Property(t => t.UpdatedAt).CurrentValue = DateTimeOffset.UtcNow;
     }
 
     private async Task ApplyAndPush(
@@ -230,17 +296,28 @@ public sealed class RepairProcessor(
         }
 
         var analysis = ticket.Analysis ?? "";
-        var subject = pushed
-            ? $"DevSup: fix pushed for {failure.Method} {failure.Path}"
-            : $"DevSup: repair for {failure.Method} {failure.Path} needs your review";
-        var body = pushed
-            ? $"<p>DevSup pushed an automatic fix for the failure on <code>{failure.Method} {failure.Path}</code>.</p>" +
+
+        // Direct pushes and PR-mode hand-offs differ in subject and action required.
+        var isPullRequest = ticket.Status == TicketStatus.FixPendingReview;
+        var subject = isPullRequest
+            ? $"DevSup: pull request opened for {failure.Method} {failure.Path}"
+            : pushed
+                ? $"DevSup: fix pushed for {failure.Method} {failure.Path}"
+                : $"DevSup: repair for {failure.Method} {failure.Path} needs your review";
+
+        var body = ticket.Status == TicketStatus.FixPendingReview
+            ? $"<p>DevSup opened a pull request with an automatic fix for <code>{failure.Method} {failure.Path}</code>.</p>" +
               $"<p><strong>Patch:</strong> {HtmlEncode(ticket.PatchSummary) ?? "auto-repair"}</p>" +
-              $"<p><strong>Commit:</strong> <code>{HtmlEncode(ticket.CommitSha)}</code></p>" +
-              $"<p>Status: <strong>FixPushed</strong>.</p>"
-            : $"<p>DevSup could not safely auto-repair the failure on <code>{failure.Method} {failure.Path}</code>.</p>" +
-              $"<p>Ticket status: <strong>NeedsHumanReview</strong>.</p>" +
-              $"<p>Agent notes: <code>{HtmlEncode(analysis)}</code></p>";
+              $"<p><strong>Pull request:</strong> <a href=\"{HtmlEncode(ticket.PullRequestUrl)}\">{HtmlEncode(ticket.PullRequestUrl)}</a></p>" +
+              $"<p>Review and merge it when ready.</p>"
+            : pushed
+                ? $"<p>DevSup pushed an automatic fix for the failure on <code>{failure.Method} {failure.Path}</code>.</p>" +
+                  $"<p><strong>Patch:</strong> {HtmlEncode(ticket.PatchSummary) ?? "auto-repair"}</p>" +
+                  $"<p><strong>Commit:</strong> <code>{HtmlEncode(ticket.CommitSha)}</code></p>" +
+                  $"<p>Status: <strong>FixPushed</strong>.</p>"
+                : $"<p>DevSup could not safely auto-repair the failure on <code>{failure.Method} {failure.Path}</code>.</p>" +
+                  $"<p>Ticket status: <strong>NeedsHumanReview</strong>.</p>" +
+                  $"<p>Agent notes: <code>{HtmlEncode(analysis)}</code></p>";
 
         db.EmailMessages.Add(new EmailMessage
         {

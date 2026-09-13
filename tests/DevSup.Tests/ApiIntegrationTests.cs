@@ -6,6 +6,7 @@ using DevSup.Api;
 using DevSup.Api.Auth;
 using DevSup.Agent.Ai;
 using DevSup.Agent.Git;
+using DevSup.Agent.PullRequests;
 using DevSup.Infrastructure.Email;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Security;
@@ -99,6 +100,26 @@ public sealed class FakeAiPatchGenerator : IAiPatchGenerator
     }
 }
 
+public sealed class FakePullRequestGateway : IPullRequestGateway
+{
+    public const string FakeUrl = "https://github.com/acme/healme/pull/1";
+
+    public List<(GitProvider Provider, string CloneUrl, string SourceBranch, string TargetBranch, string Title)> Opened { get; } = [];
+
+    public bool ThrowOnNextOpen { get; set; }
+
+    public Task<string> OpenAsync(GitProvider provider, string cloneUrl, string sourceBranch, string targetBranch, string title, string body, string accessToken, CancellationToken ct)
+    {
+        Opened.Add((provider, cloneUrl, sourceBranch, targetBranch, title));
+        if (ThrowOnNextOpen)
+        {
+            throw new InvalidOperationException("fake provider unreachable");
+        }
+
+        return Task.FromResult(FakeUrl);
+    }
+}
+
 public sealed class DevSupApiFactory : WebApplicationFactory<Program>
 {
     private readonly InMemoryDatabaseRoot _databaseRoot = new();
@@ -111,6 +132,8 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
     public FakeEmailSender EmailSender { get; } = new();
 
     public FakeGitAdapter Git { get; } = new();
+
+    public FakePullRequestGateway PullRequests { get; } = new();
 
     public FakeAiPatchGenerator AiGenerator { get; } = new();
 
@@ -154,6 +177,7 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
             services.RemoveAll<IGitLabGateway>();
             services.RemoveAll<GitLabAuthSettings>();
             services.RemoveAll<IGitAdapter>();
+            services.RemoveAll<IPullRequestGateway>();
             services.RemoveAll<IAiPatchGenerator>();
 
             services.AddDbContext<DevSupDbContext>(options =>
@@ -164,6 +188,7 @@ public sealed class DevSupApiFactory : WebApplicationFactory<Program>
             services.AddSingleton<IGitLabGateway>(GitLab);
             services.AddSingleton(GitLab.Settings);
             services.AddSingleton<IGitAdapter>(Git);
+            services.AddSingleton<IPullRequestGateway>(PullRequests);
             services.AddSingleton<IAiPatchGenerator>(AiGenerator);
         });
     }

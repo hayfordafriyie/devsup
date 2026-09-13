@@ -62,6 +62,7 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(t => t.Analysis).HasMaxLength(16_384);
             entity.Property(t => t.PatchSummary).HasMaxLength(8192);
             entity.Property(t => t.CommitSha).HasMaxLength(64);
+            entity.Property(t => t.PullRequestUrl).HasMaxLength(2048);
             entity.Property(t => t.LastError).HasMaxLength(2048);
             entity.HasIndex(t => new { t.RepositoryId, t.Status });
         });

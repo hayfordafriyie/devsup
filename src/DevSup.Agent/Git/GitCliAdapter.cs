@@ -18,6 +18,12 @@ public interface IGitAdapter
     /// </summary>
     Task<string> CommitAndPushAsync(string workingDirectory, string message, string user, string email, CancellationToken ct);
 
+    /// <summary>
+    /// Creates a local branch named <paramref name="branch"/> from the current checkout,
+    /// stages all changes, commits and pushes it to the remote. Returns the commit SHA.
+    /// </summary>
+    Task<string> CommitAndPushToBranchAsync(string workingDirectory, string branch, string message, string user, string email, CancellationToken ct);
+
     /// <summary>Removes a previously cloned working directory (best-effort).</summary>
     Task CleanupAsync(string workingDirectory, CancellationToken ct);
 }
@@ -67,6 +73,18 @@ public sealed class GitCliAdapter : IGitAdapter
     {
         await RunAsync(workingDirectory, ct, "config", "user.name", user).ConfigureAwait(false);
         await RunAsync(workingDirectory, ct, "config", "user.email", email).ConfigureAwait(false);
+        await RunAsync(workingDirectory, ct, "add", "-A").ConfigureAwait(false);
+        await RunAsync(workingDirectory, ct, "commit", "-m", message, "--allow-empty").ConfigureAwait(false);
+        var sha = (await RunAsync(workingDirectory, ct, "rev-parse", "HEAD").ConfigureAwait(false)).Trim();
+        await RunAsync(workingDirectory, ct, "push", "origin", "HEAD").ConfigureAwait(false);
+        return sha;
+    }
+
+    public async Task<string> CommitAndPushToBranchAsync(string workingDirectory, string branch, string message, string user, string email, CancellationToken ct)
+    {
+        await RunAsync(workingDirectory, ct, "config", "user.name", user).ConfigureAwait(false);
+        await RunAsync(workingDirectory, ct, "config", "user.email", email).ConfigureAwait(false);
+        await RunAsync(workingDirectory, ct, "checkout", "-b", branch).ConfigureAwait(false);
         await RunAsync(workingDirectory, ct, "add", "-A").ConfigureAwait(false);
         await RunAsync(workingDirectory, ct, "commit", "-m", message, "--allow-empty").ConfigureAwait(false);
         var sha = (await RunAsync(workingDirectory, ct, "rev-parse", "HEAD").ConfigureAwait(false)).Trim();

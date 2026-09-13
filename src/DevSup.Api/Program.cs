@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Text;
 using DevSup.Agent.Ai;
 using DevSup.Agent.Git;
+using DevSup.Agent.PullRequests;
 using DevSup.Agent.Repair;
 using DevSup.Api;
 using DevSup.Api.Auth;
@@ -85,6 +86,7 @@ var repairOptions = new RepairWorkerOptions
 builder.Services.AddSingleton(repairOptions);
 builder.Services.AddSingleton<IGitAdapter, GitCliAdapter>();
 builder.Services.AddSingleton<IRepairProvider, HeuristicRepairProvider>();
+builder.Services.AddHttpClient<IPullRequestGateway, PullRequestGateway>(client => client.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddScoped<RepairProcessor>();
 builder.Services.AddHostedService<RepairWorker>();
 
@@ -666,6 +668,7 @@ app.MapGet("/api/tickets", async (ClaimsPrincipal user, DevSupDbContext db, Canc
             t.Analysis,
             t.PatchSummary,
             t.CommitSha,
+            t.PullRequestUrl,
             t.UpdatedAt))
         .ToList();
 
