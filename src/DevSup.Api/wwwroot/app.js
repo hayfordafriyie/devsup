@@ -119,6 +119,7 @@
             var action = row.paused
                 ? '<button data-repo-resume="' + row.id + '" title="Resume monitoring">Resume</button>'
                 : '<button data-repo-pause="' + row.id + '" title="Pause monitoring">Pause</button>';
+            action += '<button data-repo-members="' + row.id + '" title="Manage team access">Members</button>';
             return "<tr>" +
                 "<td>" + escapeHtml(repoName(row.cloneUrl)) + "</td>" +
                 "<td><a href=\"" + escapeHtml(row.appUrl || "#") + "\" target=\"_blank\" rel=\"noopener\">" + escapeHtml(row.appUrl || "not configured") + "</a></td>" +
@@ -129,6 +130,40 @@
                 "</tr>";
         }).join("");
         section.hidden = false;
+    }
+
+    var membersRepoId = null;
+
+    function loadRepositoryMembers(repoId) {
+        return fetch("/api/repositories/" + repoId + "/members", {
+            headers: { Authorization: "Bearer " + token }
+        }).then(function (response) {
+            if (!response.ok) throw new Error("You do not have access to this repository");
+            return response.json();
+        }).then(function (data) {
+            membersRepoId = repoId;
+            var section = document.getElementById("repo-members-panel");
+            var list = document.getElementById("repo-members-list");
+            var form = document.getElementById("repo-member-form");
+            var emailInput = document.getElementById("repo-member-email");
+            if (data.members.length === 0) {
+                list.innerHTML = '<li><span class="muted">No members yet &mdash; invite a teammate to collaborate.</span></li>';
+            } else {
+                list.innerHTML = data.members.map(function (m) {
+                    var role = m.role === "Observer" ? "observer" : "operator";
+                    var remove = data.owner
+                        ? '<button data-member-remove="' + m.userId + '" data-member-repo="' + repoId + '" title="Revoke access">&times;</button>'
+                        : "";
+                    return "<li>" + badge({ label: role, kind: "muted" }) +
+                        " " + escapeHtml(m.displayName) + " &lt;" + escapeHtml(m.email) + "&gt;" + remove + "</li>";
+                }).join("");
+            }
+            form.hidden = !data.owner;
+            emailInput.value = "";
+            form.setAttribute("data-repo-id", repoId);
+            section.hidden = false;
+            return data;
+        });
     }
 
     function escaped(value) {
@@ -562,6 +597,29 @@
             }).catch(function (e) { showError(e.message); });
             return;
         }
+        button = event.target.closest("[data-repo-members]");
+        if (button) {
+            loadRepositoryMembers(button.getAttribute("data-repo-members")).catch(function (e) { showError(e.message); });
+            return;
+        }
+        button = event.target.closest("[data-members-close]");
+        if (button) {
+            document.getElementById("repo-members-panel").hidden = true;
+            return;
+        }
+        button = event.target.closest("[data-member-remove]");
+        if (button) {
+            var repoMemberRepo = button.getAttribute("data-member-repo");
+            var memberUserId = button.getAttribute("data-member-remove");
+            fetch("/api/repositories/" + repoMemberRepo + "/members/" + memberUserId, {
+                method: "DELETE",
+                headers: { Authorization: "Bearer " + token }
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to remove member");
+                return loadRepositoryMembers(repoMemberRepo);
+            }).catch(function (e) { showError(e.message); });
+            return;
+        }
         button = event.target.closest("[data-ticket-detail]");
         if (button) {
             loadTicketDetail(button.getAttribute("data-ticket-detail")).catch(function (e) { showError(e.message); });
@@ -749,6 +807,24 @@
             urlInput.value = "";
             nameInput.value = "";
             return load();
+        }).catch(function (e) { showError(e.message); });
+    });
+
+    var memberForm = document.getElementById("repo-member-form");
+    memberForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var repoId = memberForm.getAttribute("data-repo-id");
+        if (!repoId) return;
+        var emailInput = document.getElementById("repo-member-email");
+        var roleSelect = document.getElementById("repo-member-role");
+        fetch("/api/repositories/" + repoId + "/members", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+            body: JSON.stringify({ email: emailInput.value.trim(), role: roleSelect.value })
+        }).then(function (response) {
+            if (!response.ok) throw new Error("Failed to invite member");
+            emailInput.value = "";
+            return loadRepositoryMembers(repoId);
         }).catch(function (e) { showError(e.message); });
     });
 

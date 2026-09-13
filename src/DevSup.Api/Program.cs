@@ -802,12 +802,16 @@ app.MapPost("/api/repositories/{id:guid}/unpause", async (Guid id, ClaimsPrincip
 app.MapGet("/api/repositories/{id:guid}/members", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
 {
     var ownerId = user.GetUserId();
-    var owned = await db.ConnectedRepositories.AsNoTracking()
-        .AnyAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
-    if (!owned)
+    var hasAccess = await db.ConnectedRepositories.AsNoTracking()
+        .AnyAsync(r => r.Id == id
+            && (r.OwnerUserId == ownerId || db.RepositoryMembers.Any(m => m.RepositoryId == r.Id && m.UserId == ownerId)), ct);
+    if (!hasAccess)
     {
         return Results.NotFound();
     }
+
+    var isOwner = await db.ConnectedRepositories.AsNoTracking()
+        .AnyAsync(r => r.Id == id && r.OwnerUserId == ownerId, ct);
 
     var members = await (from m in db.RepositoryMembers.AsNoTracking()
                          join u in db.Users.AsNoTracking() on m.UserId equals u.Id
@@ -816,7 +820,7 @@ app.MapGet("/api/repositories/{id:guid}/members", async (Guid id, ClaimsPrincipa
                          select new RepositoryMemberResponse(u.Id, u.Email, u.DisplayName, m.Role.ToString(), m.CreatedAt))
         .ToListAsync(ct);
 
-    return Results.Ok(members);
+    return Results.Ok(new RepositoryMembersResponse(isOwner, members));
 }).RequireAuthorization();
 
 app.MapPost("/api/repositories/{id:guid}/members", async (Guid id, AddRepositoryMemberRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>

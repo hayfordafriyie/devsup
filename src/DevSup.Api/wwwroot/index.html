@@ -39,6 +39,19 @@
             </table>
         </section>
 
+        <section id="repo-members-panel" class="panel" hidden>
+            <h2>Members <button data-members-close title="Close">&times;</button></h2>
+            <ul id="repo-members-list"></ul>
+            <form id="repo-member-form" class="repo-member-form">
+                <input id="repo-member-email" type="email" placeholder="user@example.com" required />
+                <select id="repo-member-role">
+                    <option value="operator">Operator</option>
+                    <option value="observer">Observer</option>
+                </select>
+                <button type="submit">Invite</button>
+            </form>
+        </section>
+
         <section id="tickets-section" class="panel" hidden>
             <h2>Repair tickets</h2>
             <table id="tickets">

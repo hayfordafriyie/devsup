@@ -67,8 +67,9 @@ public sealed class RepositoryMemberTests : IAsyncLifetime
         var memberToken = await Helpers.LoginAndGetTokenAsync(_client, "unshare-member@test.dev", "Unshare Member");
         await AddMemberAsync(repoId, ownerToken, "unshare-member@test.dev", "observer");
 
-        var members = await (await GetAsync($"/api/repositories/{repoId}/members", ownerToken)).Content.ReadFromJsonAsync<List<RepositoryMemberResponse>>(Helpers.ApiJson);
-        var memberId = members!.Single(m => m.Email == "unshare-member@test.dev").UserId;
+        var membersResponse = await (await GetAsync($"/api/repositories/{repoId}/members", ownerToken)).Content.ReadFromJsonAsync<RepositoryMembersResponse>(Helpers.ApiJson);
+        Assert.True(membersResponse!.Owner);
+        var memberId = membersResponse.Members.Single(m => m.Email == "unshare-member@test.dev").UserId;
 
         var unshare = new HttpRequestMessage(HttpMethod.Delete, $"/api/repositories/{repoId}/members/{memberId}");
         unshare.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ownerToken);
@@ -155,6 +156,20 @@ public sealed class RepositoryMemberTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Member_CanListMembers_ButIsNotOwner()
+    {
+        var ownerToken = await Helpers.LoginAndGetTokenAsync(_client, "mlist-owner@test.dev", "MList Owner");
+        var repoId = await Helpers.CreateRepositoryAsync(_client, ownerToken, "https://github.com/acme/mlist-owner.git");
+
+        var memberToken = await Helpers.LoginAndGetTokenAsync(_client, "mlist-member@test.dev", "MList Member");
+        await AddMemberAsync(repoId, ownerToken, "mlist-member@test.dev", "observer");
+
+        var response = await (await GetAsync($"/api/repositories/{repoId}/members", memberToken)).Content.ReadFromJsonAsync<RepositoryMembersResponse>(Helpers.ApiJson);
+        Assert.False(response!.Owner);
+        Assert.Single(response.Members, m => m.Email == "mlist-member@test.dev");
+    }
+
+    [Fact]
     public async Task Reshare_UpdatesRole()
     {
         var ownerToken = await Helpers.LoginAndGetTokenAsync(_client, "reshare-owner@test.dev", "Reshare Owner");
@@ -164,8 +179,8 @@ public sealed class RepositoryMemberTests : IAsyncLifetime
         await AddMemberAsync(repoId, ownerToken, "reshare-member@test.dev", "observer");
         await AddMemberAsync(repoId, ownerToken, "reshare-member@test.dev", "operator");
 
-        var members = await (await GetAsync($"/api/repositories/{repoId}/members", ownerToken)).Content.ReadFromJsonAsync<List<RepositoryMemberResponse>>(Helpers.ApiJson);
-        Assert.Single(members!);
+        var members = (await (await GetAsync($"/api/repositories/{repoId}/members", ownerToken)).Content.ReadFromJsonAsync<RepositoryMembersResponse>(Helpers.ApiJson))!.Members;
+        Assert.Single(members);
         Assert.Equal("Operator", members[0].Role);
 
         await using var scope = _factory.Services.CreateAsyncScope();
