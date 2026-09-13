@@ -168,6 +168,20 @@ public sealed record WebhookDelivery
     public DateTimeOffset CreatedAt { get; init; }
 }
 
+public sealed record NotificationPreference
+{
+    public required Guid Id { get; init; }
+    public required Guid UserId { get; init; }
+    public required Guid RepositoryId { get; init; }
+
+    /// <summary>Master email switch for this repository.</summary>
+    public bool EmailEnabled { get; init; } = true;
+
+    /// <summary>Bitmask of <see cref="WebhookEvent"/> muted for email; 0 means all allowed.</summary>
+    public int MutedEmailEvents { get; init; }
+    public DateTimeOffset UpdatedAt { get; init; }
+}
+
 public sealed record AuditEntry
 {
     public required Guid Id { get; init; }

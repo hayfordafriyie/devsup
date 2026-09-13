@@ -19,6 +19,8 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
 
     public DbSet<AuditEntry> AuditEntries => Set<AuditEntry>();
 
+    public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>(entity =>
@@ -140,6 +142,14 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(a => a.IpAddress).HasMaxLength(64);
             entity.HasIndex(a => new { a.Timestamp });
             entity.HasIndex(a => new { a.ActorUserId, a.Timestamp });
+        });
+
+        modelBuilder.Entity<NotificationPreference>(entity =>
+        {
+            entity.ToTable("notification_preferences");
+            entity.HasKey(p => p.Id);
+            entity.HasIndex(p => new { p.UserId, p.RepositoryId }).IsUnique();
+            entity.Property(p => p.EmailEnabled).HasDefaultValue(true);
         });
 
         base.OnModelCreating(modelBuilder);

@@ -151,3 +151,15 @@ public sealed record WebhookDeliveryPage(
     int Page,
     int PageSize,
     int Total);
+
+public sealed record NotificationPreferenceRequest(
+    Guid RepositoryId,
+    bool? EmailEnabled = null,
+    List<string>? MutedEvents = null);
+
+public sealed record NotificationPreferenceResponse(
+    Guid RepositoryId,
+    string CloneUrl,
+    bool EmailEnabled,
+    List<string> MutedEvents,
+    DateTimeOffset UpdatedAt);

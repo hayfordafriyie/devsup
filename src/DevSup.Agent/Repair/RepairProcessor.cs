@@ -4,6 +4,7 @@ using DevSup.Agent.Git;
 using DevSup.Agent.PullRequests;
 using DevSup.Core;
 using DevSup.Core.Models;
+using DevSup.Infrastructure.Notifications;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Security;
 using DevSup.Infrastructure.Webhooks;
@@ -320,21 +321,25 @@ public sealed class RepairProcessor(
                   $"<p>Ticket status: <strong>NeedsHumanReview</strong>.</p>" +
                   $"<p>Agent notes: <code>{HtmlEncode(analysis)}</code></p>";
 
-        db.EmailMessages.Add(new EmailMessage
-        {
-            Id = Guid.NewGuid(),
-            UserId = owner.Id,
-            To = owner.Email,
-            Subject = subject,
-            HtmlBody = body,
-            CreatedAt = DateTimeOffset.UtcNow
-        });
-
         var webhookEvent = ticket.Status == TicketStatus.FixPushed
             ? WebhookEvent.FixPushed
             : ticket.Status == TicketStatus.FixPendingReview
                 ? WebhookEvent.FixPendingReview
                 : WebhookEvent.NeedsHumanReview;
+
+        // The owner may have muted email for this repository/event; webhooks always fan out.
+        if (NotificationPreferencePolicy.ShouldSendEmail(db, owner.Id, repository.Id, webhookEvent))
+        {
+            db.EmailMessages.Add(new EmailMessage
+            {
+                Id = Guid.NewGuid(),
+                UserId = owner.Id,
+                To = owner.Email,
+                Subject = subject,
+                HtmlBody = body,
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+        }
 
         WebhookQueue.Enqueue(db, owner.Id, webhookEvent, new
         {

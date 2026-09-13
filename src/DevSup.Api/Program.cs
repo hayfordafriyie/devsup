@@ -1192,6 +1192,78 @@ app.MapPost("/api/webhooks/{id:guid}/rotate", async (Guid id, ClaimsPrincipal us
     return Results.Ok(new CreateWebhookResponse(webhook.Id, webhook.Url, secret, ResolveEvents(webhook.EventMask), webhook.CreatedAt, webhook.Name, webhook.Channel));
 }).RequireAuthorization();
 
+app.MapGet("/api/notification-preferences", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var rows = await (from p in db.NotificationPreferences.AsNoTracking()
+                      join r in db.ConnectedRepositories.AsNoTracking() on p.RepositoryId equals r.Id
+                      where p.UserId == ownerId
+                      select new { p.RepositoryId, r.CloneUrl, p.EmailEnabled, p.MutedEmailEvents, p.UpdatedAt })
+        .ToListAsync(ct);
+
+    var result = rows.Select(row => new NotificationPreferenceResponse(
+            row.RepositoryId,
+            row.CloneUrl,
+            row.EmailEnabled,
+            Enumerable.Range(0, 8).Where(i => (row.MutedEmailEvents & (1 << i)) != 0).Select(i => ((WebhookEvent)i).ToString()).ToList(),
+            row.UpdatedAt))
+        .ToList();
+    return Results.Ok(result);
+}).RequireAuthorization();
+
+app.MapPut("/api/notification-preferences", async (NotificationPreferenceRequest request, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+    var repoOwned = await db.ConnectedRepositories.AsNoTracking()
+        .AnyAsync(r => r.Id == request.RepositoryId && r.OwnerUserId == ownerId, ct);
+    if (!repoOwned)
+    {
+        return Results.NotFound();
+    }
+
+    var muted = 0;
+    if (request.MutedEvents is not null)
+    {
+        foreach (var raw in request.MutedEvents)
+        {
+            if (!Enum.TryParse<WebhookEvent>(raw, ignoreCase: true, out var parsed))
+            {
+                return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: $"Unknown event '{raw}'.");
+            }
+            muted |= 1 << (int)parsed;
+        }
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    var existing = await db.NotificationPreferences
+        .FirstOrDefaultAsync(p => p.UserId == ownerId && p.RepositoryId == request.RepositoryId, ct);
+    if (existing is null)
+    {
+        existing = new NotificationPreference
+        {
+            Id = Guid.NewGuid(),
+            UserId = ownerId,
+            RepositoryId = request.RepositoryId,
+            EmailEnabled = request.EmailEnabled ?? true,
+            MutedEmailEvents = muted,
+            UpdatedAt = now
+        };
+        db.NotificationPreferences.Add(existing);
+    }
+    else
+    {
+        db.Entry(existing).Property(p => p.EmailEnabled).CurrentValue = request.EmailEnabled ?? existing.EmailEnabled;
+        db.Entry(existing).Property(p => p.MutedEmailEvents).CurrentValue = muted;
+        db.Entry(existing).Property(p => p.UpdatedAt).CurrentValue = now;
+    }
+    await db.SaveChangesAsync(ct);
+
+    var repo = await db.ConnectedRepositories.AsNoTracking().SingleAsync(r => r.Id == request.RepositoryId, ct);
+    var mutedList = Enumerable.Range(0, 8).Where(i => (existing.MutedEmailEvents & (1 << i)) != 0)
+        .Select(i => ((WebhookEvent)i).ToString()).ToList();
+    return Results.Ok(new NotificationPreferenceResponse(existing.RepositoryId, repo.CloneUrl, existing.EmailEnabled, mutedList, existing.UpdatedAt));
+}).RequireAuthorization();
+
 app.Run();
 
 static async Task<bool> IsAdminAsync(ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
