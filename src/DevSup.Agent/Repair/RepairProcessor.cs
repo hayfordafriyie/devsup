@@ -6,6 +6,7 @@ using DevSup.Core;
 using DevSup.Core.Models;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Security;
+using DevSup.Infrastructure.Webhooks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Logging;
@@ -327,6 +328,28 @@ public sealed class RepairProcessor(
             Subject = subject,
             HtmlBody = body,
             CreatedAt = DateTimeOffset.UtcNow
+        });
+
+        var webhookEvent = ticket.Status == TicketStatus.FixPushed
+            ? WebhookEvent.FixPushed
+            : ticket.Status == TicketStatus.FixPendingReview
+                ? WebhookEvent.FixPendingReview
+                : WebhookEvent.NeedsHumanReview;
+
+        WebhookQueue.Enqueue(db, owner.Id, webhookEvent, new
+        {
+            Event = webhookEvent,
+            failure = new { failure.Method, failure.Path, failure.StatusCode, FailureId = failure.Id },
+            repository = new { repository.Id, repository.CloneUrl, repository.DefaultBranch },
+            ticket = new
+            {
+                ticket.Id,
+                Status = ticket.Status,
+                ticket.Analysis,
+                ticket.PatchSummary,
+                ticket.CommitSha,
+                ticket.PullRequestUrl
+            }
         });
     }
 

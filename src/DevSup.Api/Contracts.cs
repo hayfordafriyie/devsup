@@ -48,3 +48,10 @@ public sealed record TicketResponse(
 public sealed record AiKeyRequest(AiModelProvider Provider, string Model, string Key);
 
 public sealed record AiKeyResponse(AiModelProvider Provider, string Model, string? KeyMask, DateTimeOffset UpdatedAt);
+
+public sealed record CreateWebhookRequest(string Url, List<WebhookEvent>? Events = null);
+
+/// <summary>The signing secret is returned only once, in this creation response.</summary>
+public sealed record CreateWebhookResponse(Guid Id, string Url, string Secret, List<WebhookEvent> Events, DateTimeOffset CreatedAt);
+
+public sealed record WebhookResponse(Guid Id, string Url, List<WebhookEvent> Events, bool Active, DateTimeOffset CreatedAt);

@@ -110,3 +110,37 @@ public sealed record OAuthToken
     public string? Scope { get; init; }
     public DateTimeOffset LinkedAt { get; init; }
 }
+
+public sealed record WebhookEndpoint
+{
+    public required Guid Id { get; init; }
+    public required Guid UserId { get; init; }
+
+    /// <summary>HTTPS endpoint receiving POSTed JSON events.</summary>
+    public required string Url { get; init; }
+
+    /// <summary>Signing secret used to compute the X-DevSup-Signature header, encrypted at rest.</summary>
+    public required string EncryptedSecret { get; init; }
+
+    /// <summary>Bitmask of <see cref="WebhookEvent"/> this endpoint receives; 0 means all events.</summary>
+    public int EventMask { get; init; }
+
+    public bool Active { get; init; } = true;
+    public DateTimeOffset CreatedAt { get; init; }
+}
+
+public sealed record WebhookDelivery
+{
+    public required Guid Id { get; init; }
+    public required Guid UserId { get; init; }
+    public required Guid WebhookId { get; init; }
+    public required WebhookEvent Event { get; init; }
+
+    /// <summary>Serialized JSON body delivered to the endpoint.</summary>
+    public required string Payload { get; init; }
+    public bool Sent { get; init; }
+    public DateTimeOffset? SentAt { get; init; }
+    public int Attempts { get; init; }
+    public string? LastError { get; init; }
+    public DateTimeOffset CreatedAt { get; init; }
+}

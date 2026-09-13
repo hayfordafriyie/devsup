@@ -18,6 +18,16 @@ public enum RepairMode
     PullRequest
 }
 
+/// <summary>Domain events broadcast to configured webhook endpoints.</summary>
+public enum WebhookEvent
+{
+    FailureDetected,
+    FixPushed,
+    FixPendingReview,
+    NeedsHumanReview,
+    NotCodeError
+}
+
 public enum AiModelProvider
 {
     AnthropicClaude,

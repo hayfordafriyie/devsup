@@ -14,6 +14,8 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
     public DbSet<AiModelKeyBinding> AiModelKeyBindings => Set<AiModelKeyBinding>();
     public DbSet<EmailMessage> EmailMessages => Set<EmailMessage>();
     public DbSet<OAuthToken> OAuthTokens => Set<OAuthToken>();
+    public DbSet<WebhookEndpoint> WebhookEndpoints => Set<WebhookEndpoint>();
+    public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -97,6 +99,25 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(t => t.EncryptedAccessToken).HasMaxLength(4096).IsRequired();
             entity.Property(t => t.Scope).HasMaxLength(512);
             entity.HasIndex(t => new { t.UserId, t.Provider }).IsUnique();
+        });
+
+        modelBuilder.Entity<WebhookEndpoint>(entity =>
+        {
+            entity.ToTable("webhook_endpoints");
+            entity.HasKey(w => w.Id);
+            entity.Property(w => w.Url).HasMaxLength(2048).IsRequired();
+            entity.Property(w => w.EncryptedSecret).HasMaxLength(1024).IsRequired();
+            entity.HasIndex(w => new { w.UserId, w.Url }).IsUnique();
+        });
+
+        modelBuilder.Entity<WebhookDelivery>(entity =>
+        {
+            entity.ToTable("webhook_deliveries");
+            entity.HasKey(d => d.Id);
+            entity.Property(d => d.Event).HasConversion<int>();
+            entity.Property(d => d.Payload).HasMaxLength(16_384).IsRequired();
+            entity.Property(d => d.LastError).HasMaxLength(2048);
+            entity.HasIndex(d => new { d.Sent, d.CreatedAt });
         });
 
         base.OnModelCreating(modelBuilder);

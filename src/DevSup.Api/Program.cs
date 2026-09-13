@@ -13,6 +13,7 @@ using DevSup.Core.Services;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Email;
 using DevSup.Infrastructure.Security;
+using DevSup.Infrastructure.Webhooks;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -56,6 +57,22 @@ builder.Services.AddScoped<EmailOutboxProcessor>(sp => new EmailOutboxProcessor(
     sp.GetRequiredService<ILogger<EmailOutboxProcessor>>(),
     emailOptions.MaxAttempts));
 builder.Services.AddHostedService<EmailOutboxWorker>();
+
+var webhookOptions = new WebhookWorkerOptions
+{
+    IntervalSeconds = int.TryParse(builder.Configuration["Webhooks:IntervalSeconds"], out var webhookInterval) ? webhookInterval : 15,
+    BatchSize = int.TryParse(builder.Configuration["Webhooks:BatchSize"], out var webhookBatch) ? webhookBatch : 50,
+    MaxAttempts = int.TryParse(builder.Configuration["Webhooks:MaxAttempts"], out var webhookAttempts) ? webhookAttempts : 8
+};
+builder.Services.AddSingleton(webhookOptions);
+builder.Services.AddSingleton<IWebhookDeliverer, HttpWebhookDeliverer>();
+builder.Services.AddScoped<WebhookOutboxProcessor>(sp => new WebhookOutboxProcessor(
+    sp.GetRequiredService<DevSupDbContext>(),
+    sp.GetRequiredService<IWebhookDeliverer>(),
+    sp.GetRequiredService<IKeyProtector>(),
+    sp.GetRequiredService<ILogger<WebhookOutboxProcessor>>(),
+    webhookOptions.MaxAttempts));
+builder.Services.AddHostedService<WebhookOutboxWorker>();
 
 var dataProtectionKey = builder.Configuration["Security:DataProtectionKey"]
     ?? "devsup-dev-only-data-protection-key-change-in-production";
@@ -641,6 +658,14 @@ app.MapPost("/api/ingest", async (IngestFailureRequest request, HttpRequest http
                   $"<p>Next step: ticket <strong>{ticket.Status}</strong> — the agent will investigate code errors.</p>",
             CreatedAt = DateTimeOffset.UtcNow
         });
+
+        var webhookEvent = notCodeError ? WebhookEvent.NotCodeError : WebhookEvent.FailureDetected;
+        WebhookQueue.Enqueue(db, owner.Id, webhookEvent, new
+        {
+            failure = new { failure.Method, failure.Path, failure.StatusCode, FailureId = failure.Id },
+            repository = new { repository.Id, repository.CloneUrl, repository.DefaultBranch },
+            ticket = new { ticket.Id, Status = ticket.Status, Kind = ticket.Kind }
+        });
     }
 
     await db.SaveChangesAsync(ct);
@@ -675,6 +700,66 @@ app.MapGet("/api/tickets", async (ClaimsPrincipal user, DevSupDbContext db, Canc
     return Results.Ok(tickets);
 }).RequireAuthorization();
 
+app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipal user, DevSupDbContext db, IKeyProtector protector, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Url) || !IsAbsoluteHttpUrl(request.Url))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "A valid http(s) URL is required.");
+    }
+
+    var ownerId = user.GetUserId();
+
+    if (await db.WebhookEndpoints.AnyAsync(w => w.UserId == ownerId && w.Url == request.Url, ct))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "A webhook for this URL already exists.");
+    }
+
+    var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+    var endpoint = new WebhookEndpoint
+    {
+        Id = Guid.NewGuid(),
+        UserId = ownerId,
+        Url = request.Url,
+        EncryptedSecret = protector.Protect(secret),
+        EventMask = EventsToMask(request.Events),
+        CreatedAt = DateTimeOffset.UtcNow
+    };
+
+    db.WebhookEndpoints.Add(endpoint);
+    await db.SaveChangesAsync(ct);
+
+    return Results.Created($"/api/webhooks/{endpoint.Id}",
+        new CreateWebhookResponse(endpoint.Id, endpoint.Url, secret, ResolveEvents(endpoint.EventMask), endpoint.CreatedAt));
+}).RequireAuthorization();
+
+app.MapGet("/api/webhooks", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var ownerId = user.GetUserId();
+
+    var webhooks = (await db.WebhookEndpoints
+            .AsNoTracking()
+            .Where(w => w.UserId == ownerId)
+            .OrderBy(w => w.CreatedAt)
+            .ToListAsync(ct))
+        .Select(w => new WebhookResponse(w.Id, w.Url, ResolveEvents(w.EventMask), w.Active, w.CreatedAt))
+        .ToList();
+
+    return Results.Ok(webhooks);
+}).RequireAuthorization();
+
+app.MapDelete("/api/webhooks/{id:guid}", async (Guid id, ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
+{
+    var webhook = await db.WebhookEndpoints.FirstOrDefaultAsync(w => w.Id == id && w.UserId == user.GetUserId(), ct);
+    if (webhook is null)
+    {
+        return Results.NotFound();
+    }
+
+    db.WebhookEndpoints.Remove(webhook);
+    await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+}).RequireAuthorization();
+
 app.Run();
 
 static bool IsValidEmail(string? email)
@@ -692,6 +777,34 @@ static bool IsAbsoluteHttpUrl(string value)
     => Uri.TryCreate(value, UriKind.Absolute, out var uri)
        && uri.Scheme is "http" or "https"
        && uri.Host.Length > 0;
+
+static int EventsToMask(IEnumerable<WebhookEvent>? events)
+{
+    if (events is null)
+    {
+        return 0;
+    }
+
+    var mask = 0;
+    foreach (var webhookEvent in events)
+    {
+        mask |= 1 << (int)webhookEvent;
+    }
+
+    return mask;
+}
+
+static List<WebhookEvent> ResolveEvents(int mask)
+{
+    if (mask == 0)
+    {
+        return Enum.GetValues<WebhookEvent>().ToList();
+    }
+
+    return Enum.GetValues<WebhookEvent>()
+        .Where(webhookEvent => (mask & (1 << (int)webhookEvent)) != 0)
+        .ToList();
+}
 
 static string? Truncate(string? value, int maxLength)
     => value is null || value.Length <= maxLength ? value : value[..maxLength];
