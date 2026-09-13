@@ -321,7 +321,7 @@ app.MapGet("/api/account", async (ClaimsPrincipal user, DevSupDbContext db, Canc
 {
     var account = await db.Users.AsNoTracking()
         .SingleAsync(u => u.Id == user.GetUserId(), ct);
-    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.DigestEnabled, account.CreatedAt));
+    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.DigestEnabled, account.DigestFrequency.ToString(), account.CreatedAt));
 }).RequireAuthorization();
 
 app.MapPut("/api/account", async (UpdateAccountRequest request, ClaimsPrincipal user, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
@@ -337,6 +337,23 @@ app.MapPut("/api/account", async (UpdateAccountRequest request, ClaimsPrincipal 
         return Results.NotFound();
     }
 
+    DigestFrequency? frequency = null;
+    if (!string.IsNullOrWhiteSpace(request.DigestFrequency))
+    {
+        if (string.Equals(request.DigestFrequency, "daily", StringComparison.OrdinalIgnoreCase))
+        {
+            frequency = DigestFrequency.Daily;
+        }
+        else if (string.Equals(request.DigestFrequency, "weekly", StringComparison.OrdinalIgnoreCase))
+        {
+            frequency = DigestFrequency.Weekly;
+        }
+        else
+        {
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Digest frequency must be daily or weekly.");
+        }
+    }
+
     var before = account.DisplayName;
     var beforeDigests = account.DigestEnabled;
     db.Entry(account).Property(u => u.DisplayName).CurrentValue = request.DisplayName.Trim();
@@ -344,11 +361,15 @@ app.MapPut("/api/account", async (UpdateAccountRequest request, ClaimsPrincipal 
     {
         db.Entry(account).Property(u => u.DigestEnabled).CurrentValue = request.DigestEnabled.Value;
     }
+    if (frequency is not null && frequency.Value != account.DigestFrequency)
+    {
+        db.Entry(account).Property(u => u.DigestFrequency).CurrentValue = frequency.Value;
+    }
     await db.SaveChangesAsync(ct);
     await audit.RecordAsync(account.Id, account.Email, "account.profileUpdate", "User",
         account.Id.ToString(), before: before, after: account.DisplayName, ct: ct);
 
-    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.DigestEnabled, account.CreatedAt));
+    return Results.Ok(new AccountResponse(account.Id, account.Email, account.DisplayName, account.IsAdmin, account.Active, account.DigestEnabled, account.DigestFrequency.ToString(), account.CreatedAt));
 }).RequireAuthorization();
 
 app.MapPost("/api/account/password", async (ChangePasswordRequest request, ClaimsPrincipal user, DevSupDbContext db, IPasswordHasherService hasher, AuditRecorder audit, CancellationToken ct) =>

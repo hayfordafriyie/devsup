@@ -24,13 +24,19 @@ public sealed class DigestProcessor(
 {
     public async Task<int> RunAsync(CancellationToken ct)
     {
-        var window = DateTimeOffset.UtcNow.AddHours(-options.IntervalHours);
-        var users = await db.Users.AsNoTracking().Where(u => u.Active && u.DigestEnabled).ToListAsync(ct);
+        var users = await db.Users.Where(u => u.Active && u.DigestEnabled).ToListAsync(ct);
         var now = DateTimeOffset.UtcNow;
         var generated = 0;
 
         foreach (var user in users)
         {
+            var cadenceHours = user.DigestFrequency == DigestFrequency.Weekly ? 168 : 24;
+            if (user.LastDigestSentAt is not null && now - user.LastDigestSentAt.Value < TimeSpan.FromHours(cadenceHours))
+            {
+                continue;
+            }
+
+            var window = now.AddHours(-cadenceHours);
             var ownedIds = await db.ConnectedRepositories.AsNoTracking()
                 .Where(r => r.OwnerUserId == user.Id && !r.Paused && !r.Archived)
                 .Select(r => r.Id)
@@ -87,9 +93,10 @@ public sealed class DigestProcessor(
                 UserId = user.Id,
                 To = user.Email,
                 Subject = $"DevSup daily summary: {all.Failures} failure(s), {all.Open} open ticket(s), {all.Fixed} fix(es)",
-                HtmlBody = BuildDigest(user, ownedIds.Count, sharedIds.Count, all, owned, shared, open),
+                HtmlBody = BuildDigest(user, ownedIds.Count, sharedIds.Count, all, owned, shared, open, cadenceHours),
                 CreatedAt = now
             });
+            db.Entry(user).Property(u => u.LastDigestSentAt).CurrentValue = now;
             generated++;
         }
 
@@ -101,7 +108,7 @@ public sealed class DigestProcessor(
         return generated;
     }
 
-    private string BuildDigest(User user, int ownedCount, int sharedCount, DigestCounts all, DigestCounts owned, DigestCounts shared, List<RepairTicket> open)
+    private string BuildDigest(User user, int ownedCount, int sharedCount, DigestCounts all, DigestCounts owned, DigestCounts shared, List<RepairTicket> open, int windowHours)
     {
         var sb = new StringBuilder();
         sb.Append("<h3>DevSup daily summary</h3>");
@@ -109,7 +116,7 @@ public sealed class DigestProcessor(
             ? $"<strong>{ownedCount + sharedCount}</strong> repositories ({ownedCount} yours, {sharedCount} shared with you)"
             : $"<strong>{ownedCount}</strong> connected repositories";
         sb.Append($"<p>Hi <strong>{Escape(user.DisplayName)}</strong>, here's what happened across your " +
-                  $"{scope} in the last <strong>{options.IntervalHours}</strong> hour(s):</p>");
+                  $"{scope} in the last <strong>{windowHours}</strong> hour(s):</p>");
         sb.Append("<ul>");
         sb.Append($"<li>Failures detected: <strong>{all.Failures}</strong></li>");
         sb.Append($"<li>Open repair tickets: <strong>{all.Open}</strong></li>");

@@ -35,6 +35,7 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(u => u.PasswordHash).HasMaxLength(512).IsRequired();
             entity.Property(u => u.IsAdmin).HasDefaultValue(false);
             entity.Property(u => u.Active).HasDefaultValue(true);
+            entity.Property(u => u.DigestFrequency).HasConversion<int>();
         });
 
         modelBuilder.Entity<ConnectedRepository>(entity =>

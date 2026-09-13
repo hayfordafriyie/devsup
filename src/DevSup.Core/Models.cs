@@ -20,6 +20,12 @@ public sealed record User
     /// <summary>When false the daily digest worker skips this user entirely.</summary>
     public bool DigestEnabled { get; init; } = true;
 
+    /// <summary>Cadence for the digest email when enabled (daily or weekly).</summary>
+    public DigestFrequency DigestFrequency { get; init; } = DigestFrequency.Daily;
+
+    /// <summary>When the last digest was enqueued for this user; used to honour the cadence.</summary>
+    public DateTimeOffset? LastDigestSentAt { get; init; }
+
     public DateTimeOffset CreatedAt { get; init; }
 }
 

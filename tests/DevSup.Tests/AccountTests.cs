@@ -139,4 +139,30 @@ public sealed class AccountTests : IAsyncLifetime
         var db = scope.ServiceProvider.GetRequiredService<DevSupDbContext>();
         Assert.Equal(1, await db.AuditEntries.AsNoTracking().CountAsync(a => a.Action == "account.passwordChange"));
     }
+
+    [Fact]
+    public async Task UpdateDigestCadence_ReflectsImmediately()
+    {
+        var token = await Helpers.LoginAndGetTokenAsync(_client, "acct-cadence@test.dev", "Acct Cadence");
+
+        var get = new HttpRequestMessage(HttpMethod.Get, "/api/account");
+        get.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var initial = await (await _client.SendAsync(get)).Content.ReadFromJsonAsync<AccountResponse>(Helpers.ApiJson);
+        Assert.Equal("Daily", initial!.DigestFrequency);
+
+        var weekly = new HttpRequestMessage(HttpMethod.Put, "/api/account")
+        {
+            Content = JsonContent.Create(new { displayName = "Acct Cadence", digestFrequency = "weekly" })
+        };
+        weekly.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var updated = await (await _client.SendAsync(weekly)).Content.ReadFromJsonAsync<AccountResponse>(Helpers.ApiJson);
+        Assert.Equal("Weekly", updated!.DigestFrequency);
+
+        var invalid = new HttpRequestMessage(HttpMethod.Put, "/api/account")
+        {
+            Content = JsonContent.Create(new { displayName = "Acct Cadence", digestFrequency = "hourly" })
+        };
+        invalid.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        Assert.Equal(HttpStatusCode.BadRequest, (await _client.SendAsync(invalid)).StatusCode);
+    }
 }

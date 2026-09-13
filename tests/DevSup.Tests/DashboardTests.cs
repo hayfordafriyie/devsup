@@ -161,6 +161,8 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("\"/api/repositories/\" + repoId + \"/activity\"", js);
         Assert.Contains("data-activity-export", js);
         Assert.Contains("\"/activity/export\"", js);
+        Assert.Contains("digest-frequency", js);
+        Assert.Contains("digestFrequency", js);
         Assert.Contains("repo-bulk-bar", html2);
         Assert.Contains("data-bulk-action", js);
         Assert.Contains("repo-select", js);

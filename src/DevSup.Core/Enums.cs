@@ -97,3 +97,10 @@ public enum MemberRole
     Observer,
     Operator
 }
+
+/// <summary>How often a user receives the activity digest email.</summary>
+public enum DigestFrequency
+{
+    Daily,
+    Weekly
+}

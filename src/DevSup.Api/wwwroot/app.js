@@ -410,8 +410,12 @@
             "<br><strong>Email:</strong> <code>" + escapeHtml(account.email) + "</code></p>" +
             '<label class="pref-controls"><input type="checkbox" id="digest-toggle"' +
             (account.digestEnabled ? " checked" : "") +
-            ' /> Send me the daily digest summary</label>' +
-            '<p class="muted">The daily digest summarizes failures, open repair tickets and recently pushed fixes. Turning it off keeps transactional incident emails and webhook deliveries intact.</p>';
+            ' /> Send me the digest summary</label>' +
+            '<label class="pref-controls">Cadence: <select id="digest-frequency">' +
+            '<option value="daily"' + (account.digestFrequency === "Daily" ? " selected" : "") + ">Daily</option>" +
+            '<option value="weekly"' + (account.digestFrequency === "Weekly" ? " selected" : "") + ">Weekly</option>" +
+            "</select></label>" +
+            '<p class="muted">The digest summarizes failures, open repair tickets and recently pushed fixes. Turning it off keeps transactional incident emails and webhook deliveries intact.</p>';
         body.querySelector("#digest-toggle").addEventListener("change", function () {
             if (!currentAccount) return;
             var enabled = this.checked;
@@ -421,6 +425,18 @@
                 body: JSON.stringify({ displayName: currentAccount.displayName, digestEnabled: enabled })
             }).then(function (response) {
                 if (!response.ok) throw new Error("Failed to update digest preference");
+                return loadAccount();
+            }).catch(function (e) { showError(e.message); });
+        });
+        body.querySelector("#digest-frequency").addEventListener("change", function () {
+            if (!currentAccount) return;
+            var frequency = this.value;
+            fetch("/api/account", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+                body: JSON.stringify({ displayName: currentAccount.displayName, digestFrequency: frequency })
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Failed to update digest cadence");
                 return loadAccount();
             }).catch(function (e) { showError(e.message); });
         });
