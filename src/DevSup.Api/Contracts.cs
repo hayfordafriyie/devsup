@@ -10,14 +10,15 @@ public sealed record UserResponse(Guid Id, string Email, string DisplayName);
 
 public sealed record LoginResponse(string Token, DateTimeOffset ExpiresAt, UserResponse User);
 
-public sealed record CreateRepositoryRequest(GitProvider Provider, string CloneUrl, string DefaultBranch, string? AppUrl = null);
+public sealed record CreateRepositoryRequest(GitProvider Provider, string CloneUrl, string DefaultBranch, string? AppUrl = null, RepairMode RepairMode = RepairMode.DirectPush);
 
 public sealed record RepositoryResponse(
     Guid Id,
     string Provider,
     string CloneUrl,
     string DefaultBranch,
-    string? AppUrl);
+    string? AppUrl,
+    RepairMode RepairMode);
 
 public sealed record IngestFailureRequest(
     Guid RepositoryId,

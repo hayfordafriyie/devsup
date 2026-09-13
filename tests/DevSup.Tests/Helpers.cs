@@ -42,7 +42,7 @@ public static class Helpers
         var response = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
-        var repository = await response.Content.ReadFromJsonAsync<RepositoryResponse>();
+        var repository = await response.Content.ReadFromJsonAsync<RepositoryResponse>(Helpers.ApiJson);
         Assert.NotNull(repository);
         return repository.Id;
     }

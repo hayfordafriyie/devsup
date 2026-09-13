@@ -35,6 +35,7 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(r => r.DefaultBranch).HasMaxLength(255).IsRequired();
             entity.Property(r => r.AppUrl).HasMaxLength(2048);
             entity.Property(r => r.Provider).HasConversion<int>();
+            entity.Property(r => r.RepairMode).HasConversion<int>();
             entity.HasIndex(r => new { r.OwnerUserId, r.CloneUrl }).IsUnique();
         });
 

@@ -21,6 +21,10 @@ public sealed record ConnectedRepository
     public required string CloneUrl { get; init; }
     public required string DefaultBranch { get; init; }
     public string? AppUrl { get; init; }
+
+    /// <summary>How the repair agent lands fixes into this repository.</summary>
+    public RepairMode RepairMode { get; init; } = RepairMode.DirectPush;
+
     public DateTimeOffset ConnectedAt { get; init; }
 }
 

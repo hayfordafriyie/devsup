@@ -530,6 +530,7 @@ app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsP
         CloneUrl = request.CloneUrl,
         DefaultBranch = request.DefaultBranch,
         AppUrl = request.AppUrl,
+        RepairMode = request.RepairMode,
         ConnectedAt = DateTimeOffset.UtcNow
     };
 
@@ -545,7 +546,7 @@ app.MapPost("/api/repositories", async (CreateRepositoryRequest request, ClaimsP
     }
 
     return Results.Created($"/api/repositories/{repository.Id}",
-        new RepositoryResponse(repository.Id, repository.Provider.ToString(), repository.CloneUrl, repository.DefaultBranch, repository.AppUrl));
+        new RepositoryResponse(repository.Id, repository.Provider.ToString(), repository.CloneUrl, repository.DefaultBranch, repository.AppUrl, repository.RepairMode));
 }).RequireAuthorization();
 
 app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
@@ -554,7 +555,7 @@ app.MapGet("/api/repositories", async (ClaimsPrincipal user, DevSupDbContext db,
     var repositories = await db.ConnectedRepositories
         .AsNoTracking()
         .Where(r => r.OwnerUserId == ownerId)
-        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl))
+        .Select(r => new RepositoryResponse(r.Id, r.Provider.ToString(), r.CloneUrl, r.DefaultBranch, r.AppUrl, r.RepairMode))
         .ToListAsync(ct);
 
     return Results.Ok(repositories);

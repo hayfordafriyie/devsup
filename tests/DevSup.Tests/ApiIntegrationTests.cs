@@ -257,9 +257,50 @@ public sealed class ApiIntegrationTests : IAsyncLifetime
         var list = await _client.GetAsync("/api/repositories");
         Assert.Equal(HttpStatusCode.OK, list.StatusCode);
 
-        var body = await list.Content.ReadFromJsonAsync<List<RepositoryResponse>>();
+        var body = await list.Content.ReadFromJsonAsync<List<RepositoryResponse>>(Helpers.ApiJson);
         Assert.NotNull(body);
         Assert.Contains(body, r => r.CloneUrl == "https://github.com/acme/widgets.git");
+    }
+
+    [Fact]
+    public async Task CreateRepository_WithPullRequestRepairMode_RoundTrips()
+    {
+        var token = await LoginAndGetTokenAsync("repos-pr@example.com", "Repo PR");
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/repositories")
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new
+                {
+                    provider = "github",
+                    cloneUrl = "https://github.com/acme/pr-mode.git",
+                    defaultBranch = "main",
+                    appUrl = "https://acme.example",
+                    repairMode = "pullRequest"
+                }),
+                Encoding.UTF8,
+                "application/json")
+        };
+        request.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        var create = await _client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+
+        var created = await create.Content.ReadFromJsonAsync<RepositoryResponse>(Helpers.ApiJson);
+        Assert.NotNull(created);
+        Assert.Equal(RepairMode.PullRequest, created.RepairMode);
+
+        _client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        var list = await _client.GetAsync("/api/repositories");
+        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+
+        var body = await list.Content.ReadFromJsonAsync<List<RepositoryResponse>>(Helpers.ApiJson);
+        Assert.NotNull(body);
+        Assert.Contains(body, r => r.CloneUrl == "https://github.com/acme/pr-mode.git"
+                                  && r.RepairMode == RepairMode.PullRequest);
     }
 
     [Fact]
@@ -440,7 +481,7 @@ Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     {
         var create = await CreateRepositoryAsync(token, cloneUrl);
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
-        var response = await create.Content.ReadFromJsonAsync<RepositoryResponse>();
+        var response = await create.Content.ReadFromJsonAsync<RepositoryResponse>(Helpers.ApiJson);
         Assert.NotNull(response);
         return response.Id;
     }
