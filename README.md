@@ -5,10 +5,10 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.28** — the **webhook retry-all** release.
-> `POST /api/webhooks/{id}/deliveries/retry-all` re-queues every failed delivery for an
-> endpoint in one call (audited `webhook.retryAll`), and the dashboard delivery log
-> gains a **Retry all failed** button. 240 tests passing.
+> Project status: **v0.29** — the **fleet CSV export** release.
+> `GET /api/admin/repositories/export` streams the filtered cross-tenant fleet view as
+> CSV for offline audits, and the dashboard's Fleet health panel gains an **Export CSV**
+> button. 242 tests passing.
 
 ---
 
@@ -494,6 +494,9 @@ always created the moment that account registers.
   count and total failures. Paginated (`page` / `pageSize` ≤ 200), filterable by
   `health` (`healthy` / `unhealthy` / `unchecked`), `owner` email, `paused` and
   `archived`.
+- `GET /api/admin/repositories/export` (v0.29) — the same filtered fleet view as a
+  UTF-8 CSV (`repositoryId,ownerEmail,provider,cloneUrl,defaultBranch,appUrl,health,
+  paused,archived,openTickets,totalFailures,connectedAtUtc`), for offline fleet audits.
 - `POST /api/admin/users/{id}/deactivate` and `.../activate` — suspend / restore a
   tenant. A deactivated account can no longer sign in (`403` at login).
 
@@ -781,6 +784,7 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/dashboard/` | — | Self-contained dashboard UI (open in a browser) |
 | `GET` | `/api/admin/overview` | Bearer + admin | Platform-wide totals + repository health breakdown |
 | `GET` | `/api/admin/repositories` | Bearer + admin | Cross-tenant fleet view (`health`, `owner`, `paused`, `archived` filters; paginated) |
+| `GET` | `/api/admin/repositories/export` | Bearer + admin | Fleet view as UTF-8 CSV (same filters) |
 | `GET` | `/api/admin/users` | Bearer + admin | List every user with admin/active flags and per-user counts |
 | `POST` | `/api/admin/users/{id}/deactivate` | Bearer + admin | Suspend an account (blocks future sign-in) |
 | `POST` | `/api/admin/users/{id}/activate` | Bearer + admin | Restore a suspended account |
@@ -840,6 +844,7 @@ push/PR to `master`.
 - **v0.26** *(done)* — per-repository retention overrides: `PUT /api/repositories/{id}/retention` (inherit / keep-forever / custom days), the retention worker honours each policy for that repo's failures + tickets, audited `repository.retention`, dashboard Retention control; migration `AddRepositoryRetention`
 - **v0.27** *(done)* — repository-scoped webhooks: optional `repositoryIds` scope on `POST /api/webhooks`; scoped endpoints receive only their repositories' events (unscoped = all), scope echoed on list, validated to owned repos, dashboard multi-select; migration `AddWebhookRepositoryScope`
 - **v0.28** *(done)* — webhook retry-all: `POST /api/webhooks/{id}/deliveries/retry-all` re-queues every failed delivery for an endpoint (audited `webhook.retryAll`), dashboard Retry all failed button
+- **v0.29** *(done)* — fleet CSV export: `GET /api/admin/repositories/export` streams the filtered cross-tenant fleet view as CSV, with an Export CSV button in the dashboard Fleet health panel
 
 ---
 
