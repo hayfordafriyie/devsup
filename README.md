@@ -5,11 +5,12 @@ captures failures as they happen, dispatches an AI agent to investigate your cod
 push a fix, and emails you at every step — so you get notified of the error and its fix,
 instead of digging through logs.
 
-> Project status: **v0.18** — the **role enforcement & collaborative notifications**
-> release. Shared-repository roles now mean something: **operators** triage (close,
-> reopen, re-dispatch) and are copied on incident emails, while **observers** are
-> read-only and quiet. The ticket-detail API reports `canTriage` so the dashboard only
-> shows actions you're allowed to take. 186 tests passing.
+> Project status: **v0.19** — the **ownership transfer & member self-service** release.
+> Repository owners can hand a repo to an existing **operator** member
+> (`POST /api/repositories/{id}/transfer`), demoting themselves to operator so
+> collaboration continues without interruption; any member can remove themselves with
+> `POST /api/repositories/{id}/leave`. Both are audited, and the dashboard Members panel
+> grows **Transfer** and **Leave repository** controls. 194 tests passing.
 
 ---
 
@@ -337,6 +338,25 @@ each member's copy rides their own `emailEnabled` / `mutedEvents` notification
 preferences. Observers stay quiet, and webhook fan-out remains scoped to the owner's
 endpoints.
 
+### Ownership transfer & member self-service (v0.19)
+
+Teams change, and access should follow. Two routes keep sharing honest:
+
+- `POST /api/repositories/{id}/transfer` — the owner hands the repository to an
+  **existing operator member** (`{ email }`). The new owner takes over monitoring,
+  member management and app configuration; the **previous owner is demoted to an
+  operator member** so they keep working until they choose to leave. Transferring to an
+  observer, a non-member, or someone who already owns a repo with the same clone URL is
+  rejected (`400` / `409`). The new owner gets a "you now own …" email reminding them to
+  link a git provider token.
+- `POST /api/repositories/{id}/leave` — any member removes **themselves** from a shared
+  repository (audited as `repository.leave`). Owners can't leave their own repo — they
+  must transfer it first (`409`).
+
+Both transitions are audited (`repository.transfer` / `repository.leave`). In the
+dashboard's **Members** panel the owner sees a **Transfer** button on each operator and
+a **Leave repository** button appears for members viewing a repo they don't own.
+
 ## 10. Platform admin & data retention
 
 ### Platform admin (multi-tenant)
@@ -388,6 +408,7 @@ before/after summary, timestamp) so platform admins can answer "who did what, wh
 - `webhook.activate`, `webhook.deactivate` — endpoint pause/resume
 - `repository.pause`, `repository.unpause` — monitoring pause/resume
 - `repository.share`, `repository.unshare` — repository sharing (invite / revoke)
+- `repository.transfer`, `repository.leave` — ownership hand-off and member self-removal
 - `email.retry` — re-queuing a failed outbound email
 - `ticket.close`, `ticket.reopen` — ticket lifecycle (triage) operations
 
@@ -559,6 +580,8 @@ the same migration set on PostgreSQL via Npgsql instead.
 | `GET` | `/api/repositories/{id}/members` | Bearer | List repository members (`owner` flag) |
 | `POST` | `/api/repositories/{id}/members` | Bearer | Invite a member (`{ email, role }`; reshare updates role) |
 | `DELETE` | `/api/repositories/{id}/members/{userId}` | Bearer | Revoke a member's access |
+| `POST` | `/api/repositories/{id}/transfer` | Bearer | Transfer ownership to an operator member (owner becomes operator) |
+| `POST` | `/api/repositories/{id}/leave` | Bearer | Leave a shared repository (members only; owners must transfer first) |
 | `POST` | `/api/ingest` | Bearer | Report a failure; triaged into a repair ticket |
 | `GET` | `/api/tickets` | Bearer | List repair tickets for your repositories |
 | `GET` | `/api/ai-keys` | Bearer | List your AI key bindings (masked) |
@@ -637,6 +660,7 @@ push/PR to `master`.
 - **v0.16** *(done)* — monitoring controls: pause/unpause repositories (health checks, ingest, repair skip; migration `AddRepositoryPaused`), webhook activate/deactivate API + dashboard Pause/Resume buttons per repo and webhook
 - **v0.17** *(done)* — teams & shared repositories: owners invite/revoke members by role, shared members see the repo across overview/tickets/failures/preferences/digest while ingest + repair stay owner-only; dashboard Members panel (invite form + revoke), migration `AddRepositoryMembers`
 - **v0.18** *(done)* — role enforcement & collaborative notifications: operator members triage (close/reopen/redispatch) while observers get `403`; ticket detail reports `canTriage` and the dashboard hides triage actions accordingly; operator members are copied on incident + fix-status emails (per their own notification preferences)
+- **v0.19** *(done)* — ownership transfer & member self-service: owner hands a repo to an operator member (previous owner demoted to operator, new owner emailed), members can leave a shared repo; both audited, dashboard Transfer/Leave controls
 
 ---
 
