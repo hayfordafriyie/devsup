@@ -123,6 +123,6 @@ public sealed class AppHealthChecker(
                 source = "appHealthCheck",
                 failure = new { failure.Method, failure.Path, failure.StatusCode, FailureId = failure.Id },
                 repository = new { repository.Id, repository.CloneUrl, repository.DefaultBranch, repository.AppUrl }
-            });
+            }, repository.Id);
     }
 }

@@ -63,7 +63,7 @@ public static class FailureReporter
             failure = new { failure.Method, failure.Path, failure.StatusCode, FailureId = failure.Id },
             repository = new { repository.Id, repository.CloneUrl, repository.DefaultBranch },
             ticket = new { ticket.Id, Status = ticket.Status, Kind = ticket.Kind }
-        });
+        }, repository.Id);
     }
 
     private static async IAsyncEnumerable<User> MemberRecipients(DevSupDbContext db, Guid repositoryId, [EnumeratorCancellation] CancellationToken ct)

@@ -1912,6 +1912,20 @@ app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipa
         return Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "A webhook for this URL already exists.");
     }
 
+    string? scope = null;
+    if (request.RepositoryIds is { Count: > 0 })
+    {
+        var ids = request.RepositoryIds.Distinct().ToList();
+        var ownedCount = await db.ConnectedRepositories.AsNoTracking()
+            .CountAsync(r => r.OwnerUserId == ownerId && ids.Contains(r.Id), ct);
+        if (ownedCount != ids.Count)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+                detail: "One or more scoped repositories were not found for this account.");
+        }
+        scope = string.Join(',', ids);
+    }
+
     var secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
     var endpoint = new WebhookEndpoint
     {
@@ -1922,6 +1936,7 @@ app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipa
         Channel = request.Channel,
         EncryptedSecret = protector.Protect(secret),
         EventMask = EventsToMask(request.Events),
+        RepositoryIds = scope,
         CreatedAt = DateTimeOffset.UtcNow
     };
 
@@ -1934,7 +1949,7 @@ app.MapPost("/api/webhooks", async (CreateWebhookRequest request, ClaimsPrincipa
         endpoint.Id.ToString(), after: endpoint.Url, ct: ct);
 
     return Results.Created($"/api/webhooks/{endpoint.Id}",
-        new CreateWebhookResponse(endpoint.Id, endpoint.Url, secret, ResolveEvents(endpoint.EventMask), endpoint.CreatedAt, endpoint.Name, endpoint.Channel));
+        new CreateWebhookResponse(endpoint.Id, endpoint.Url, secret, ResolveEvents(endpoint.EventMask), endpoint.CreatedAt, endpoint.Name, endpoint.Channel, ResolveRepositoryIds(endpoint.RepositoryIds)));
 }).RequireAuthorization();
 
 app.MapGet("/api/webhooks", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
@@ -1946,7 +1961,7 @@ app.MapGet("/api/webhooks", async (ClaimsPrincipal user, DevSupDbContext db, Can
             .Where(w => w.UserId == ownerId)
             .OrderBy(w => w.CreatedAt)
             .ToListAsync(ct))
-        .Select(w => new WebhookResponse(w.Id, w.Url, ResolveEvents(w.EventMask), w.Active, w.CreatedAt, w.Name, w.Channel))
+        .Select(w => new WebhookResponse(w.Id, w.Url, ResolveEvents(w.EventMask), w.Active, w.CreatedAt, w.Name, w.Channel, ResolveRepositoryIds(w.RepositoryIds)))
         .ToList();
 
     return Results.Ok(webhooks);
@@ -2319,5 +2334,14 @@ static List<WebhookEvent> ResolveEvents(int mask)
 
 static string? Truncate(string? value, int maxLength)
     => value is null || value.Length <= maxLength ? value : value[..maxLength];
+
+static List<Guid>? ResolveRepositoryIds(string? scope)
+    => string.IsNullOrWhiteSpace(scope)
+        ? null
+        : scope.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => Guid.TryParse(part, out var id) ? (Guid?)id : null)
+            .Where(id => id is not null)
+            .Select(id => id!.Value)
+            .ToList();
 
 public partial class Program;

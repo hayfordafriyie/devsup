@@ -103,12 +103,12 @@ public sealed record BulkRepositoryActionResponse(string Action, IReadOnlyList<B
 
 public sealed record AiKeyResponse(AiModelProvider Provider, string Model, string? KeyMask, DateTimeOffset UpdatedAt);
 
-public sealed record CreateWebhookRequest(string Url, List<WebhookEvent>? Events = null, string? Name = null, WebhookChannel Channel = WebhookChannel.Http);
+public sealed record CreateWebhookRequest(string Url, List<WebhookEvent>? Events = null, string? Name = null, WebhookChannel Channel = WebhookChannel.Http, List<Guid>? RepositoryIds = null);
 
 /// <summary>The signing secret is returned only once, in this creation response.</summary>
-public sealed record CreateWebhookResponse(Guid Id, string Url, string Secret, List<WebhookEvent> Events, DateTimeOffset CreatedAt, string? Name, WebhookChannel Channel);
+public sealed record CreateWebhookResponse(Guid Id, string Url, string Secret, List<WebhookEvent> Events, DateTimeOffset CreatedAt, string? Name, WebhookChannel Channel, List<Guid>? RepositoryIds = null);
 
-public sealed record WebhookResponse(Guid Id, string Url, List<WebhookEvent> Events, bool Active, DateTimeOffset CreatedAt, string? Name, WebhookChannel Channel);
+public sealed record WebhookResponse(Guid Id, string Url, List<WebhookEvent> Events, bool Active, DateTimeOffset CreatedAt, string? Name, WebhookChannel Channel, List<Guid>? RepositoryIds = null);
 
 public sealed record RepositoryHealthRow(
     Guid Id,

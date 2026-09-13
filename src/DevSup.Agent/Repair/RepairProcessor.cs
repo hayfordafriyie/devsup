@@ -384,7 +384,7 @@ public sealed class RepairProcessor(
                 ticket.CommitSha,
                 ticket.PullRequestUrl
             }
-        });
+        }, repository.Id);
     }
 
     private static void EnsureWithinWorkspace(string workspace, string relativePath)

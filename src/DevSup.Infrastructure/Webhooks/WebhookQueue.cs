@@ -22,7 +22,7 @@ public static class WebhookQueue
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
-    public static void Enqueue(DevSupDbContext db, Guid userId, WebhookEvent webhookEvent, object payload)
+    public static void Enqueue(DevSupDbContext db, Guid userId, WebhookEvent webhookEvent, object payload, Guid? repositoryId = null)
     {
         var endpoints = db.WebhookEndpoints
             .Where(w => w.UserId == userId && w.Active)
@@ -44,6 +44,11 @@ public static class WebhookQueue
                 continue;
             }
 
+            if (!WebhookScope.Matches(endpoint.RepositoryIds, repositoryId))
+            {
+                continue;
+            }
+
             db.WebhookDeliveries.Add(new WebhookDelivery
             {
                 Id = Guid.NewGuid(),
@@ -54,5 +59,33 @@ public static class WebhookQueue
                 CreatedAt = createdAt
             });
         }
+    }
+}
+
+/// <summary>
+/// Resolves whether a webhook endpoint subscribed to a repository. A null/empty scope
+/// means "all repositories"; a scoped endpoint only receives events for its repos.
+/// </summary>
+public static class WebhookScope
+{
+    public static bool Matches(string? scope, Guid? repositoryId)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+        {
+            return true;
+        }
+        if (repositoryId is null)
+        {
+            return false;
+        }
+
+        foreach (var part in scope.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (Guid.TryParse(part, out var parsed) && parsed == repositoryId.Value)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }

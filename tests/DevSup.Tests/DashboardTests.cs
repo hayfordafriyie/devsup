@@ -169,6 +169,9 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("\"/api/admin/repositories?pageSize=100\"", js);
         Assert.Contains("data-repo-retention", js);
         Assert.Contains("\"/retention\"", js);
+        Assert.Contains("webhook-repos", html2);
+        Assert.Contains("renderWebhookRepoOptions", js);
+        Assert.Contains("repositoryIds", js);
         Assert.Contains("repo-bulk-bar", html2);
         Assert.Contains("data-bulk-action", js);
         Assert.Contains("repo-select", js);

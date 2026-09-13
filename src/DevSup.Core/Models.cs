@@ -172,6 +172,9 @@ public sealed record WebhookEndpoint
     /// <summary>Bitmask of <see cref="WebhookEvent"/> this endpoint receives; 0 means all events.</summary>
     public int EventMask { get; init; }
 
+    /// <summary>Comma-separated repository ids this endpoint is scoped to; null/empty means all repositories.</summary>
+    public string? RepositoryIds { get; init; }
+
     public bool Active { get; init; } = true;
     public DateTimeOffset CreatedAt { get; init; }
 }

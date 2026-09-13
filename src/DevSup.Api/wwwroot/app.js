@@ -343,9 +343,12 @@
                 var events = escapeHtml(w.events.map(function (e) {
                     return String(e).replace(/([A-Z])/g, " $1").toLowerCase();
                 }).join(", "));
+                var scopeText = (w.repositoryIds && w.repositoryIds.length)
+                    ? w.repositoryIds.length + " repo(s)"
+                    : "all repositories";
                 return "<li>" + channelBadge(w.channel) + " " + (w.active ? "" : '<span class="status muted">Inactive</span> ') + name +
                     ' <a href="' + escapeHtml(w.url) + '" target="_blank" rel="noopener">' + escapeHtml(w.url) + "</a>" +
-                    '<span class="muted">&nbsp;&middot; ' + events + "</span>" +
+                    '<span class="muted">&nbsp;&middot; ' + events + " &middot; " + scopeText + "</span>" +
                     (w.active
                         ? '<button data-webhook-pause="' + w.id + '" title="Stop delivering to this endpoint">Pause</button>'
                         : '<button data-webhook-resume="' + w.id + '" title="Resume delivering to this endpoint">Resume</button>') +
@@ -356,6 +359,17 @@
             }).join("");
         }
         section.hidden = false;
+    }
+
+    function renderWebhookRepoOptions(repos) {
+        var select = document.getElementById("webhook-repos");
+        var selected = Array.prototype.map.call(select.selectedOptions, function (o) { return o.value; });
+        select.innerHTML = repos.map(function (r) {
+            return '<option value="' + r.id + '">' + escapeHtml(repoName(r.cloneUrl)) + "</option>";
+        }).join("");
+        Array.prototype.forEach.call(select.options, function (o) {
+            if (selected.indexOf(o.value) >= 0) o.selected = true;
+        });
     }
 
     function renderDeliveryLog(webhookId, page) {
@@ -674,6 +688,7 @@
         var webhooks = await api("/api/webhooks");
         renderCards(overview);
         renderRepositories(overview);
+        renderWebhookRepoOptions(overview.repositories);
         renderTickets(tickets);
         renderWebhooks(webhooks);
         await loadAdmin();
@@ -1066,6 +1081,10 @@
         };
         var name = nameInput.value.trim();
         if (name) payload.name = name;
+        var repositoryIds = Array.prototype.map.call(
+            document.getElementById("webhook-repos").selectedOptions,
+            function (o) { return o.value; });
+        if (repositoryIds.length) payload.repositoryIds = repositoryIds;
         fetch("/api/webhooks", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
