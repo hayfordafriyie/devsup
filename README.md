@@ -80,6 +80,81 @@ merges without visibility.
                                  Feedback loop
 ```
 
+### Instrumenting your app
+
+**ASP.NET Core (.NET):** add the `DevSup.Instrumentation` package, register an HTTP
+client, then put the middleware near the top of the pipeline:
+
+```csharp
+builder.Services.AddHttpClient();
+
+var app = builder.Build();
+app.UseDevSup(new DevSupInstrumentationOptions
+{
+    IngestEndpoint = new Uri("https://your-devsup/api/ingest"),
+    ApiToken       = "<your DevSup JWT>",
+    RepositoryId   = Guid.Parse("<repository id from GET /api/repositories>")
+});
+```
+
+`DevSupMiddleware` buffers the request body, and on an unhandled exception or any
+status code in `FailureStatusCodes` (default 4xx/5xx) it redacts secrets and POSTs the
+event to `/api/ingest` — **fire-and-forget**, so a DevSup outage never breaks your app.
+Useful options: `MaxCapturedPayloadLength`, `SensitiveHeaderNames` (stripped before
+sending), `FailureStatusCodes`, and `SchemaVersion`.
+
+**Any other language:** there is no SDK, but the wire contract is just an HTTP POST —
+an interceptor is ~20 lines. Send:
+
+- `POST /api/ingest`
+- `Authorization: Bearer <your DevSup JWT>` (the endpoint verifies the repository
+  belongs to that account)
+- `X-DevSup-Schema-Version: 1`
+- JSON body matching `IngestFailureRequest`:
+
+```json
+{
+  "repositoryId": "00000000-0000-0000-0000-000000000000",
+  "statusCode": 500,
+  "method": "GET",
+  "path": "/api/orders",
+  "requestPayload": "...",
+  "responsePayload": "...",
+  "exceptionMessage": "...",
+  "stackTrace": "..."
+}
+```
+
+```js
+// Node/Express sketch
+app.use(async (req, res, next) => {
+  try {
+    await next();
+    if (res.statusCode >= 400) report(req, res.statusCode);
+  } catch (e) { report(req, 500, e); throw e; }
+});
+
+function report(req, statusCode, e) {
+  fetch(process.env.DEVSUP_URL + "/api/ingest", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + process.env.DEVSUP_TOKEN,
+      "X-DevSup-Schema-Version": "1"
+    },
+    body: JSON.stringify({
+      repositoryId: process.env.DEVSUP_REPO_ID,
+      statusCode, method: req.method, path: req.originalUrl,
+      exceptionMessage: e?.message, stackTrace: e?.stack
+    })
+  }).catch(() => {}); // never let reporting break the request
+}
+```
+
+Strip `Authorization`, `Cookie` and `X-Api-Key` before sending (the .NET SDK does this
+for you). If your reported `X-DevSup-Schema-Version` is newer than the platform
+supports, ingest replies `426 Upgrade Required` rather than misinterpreting the event.
+
 ## 4. Architecture
 
 DevSup is split by responsibility so the platform, the agent, and the instrumentation
