@@ -45,7 +45,7 @@ public static class FailureReporter
         // The owner may have muted email for this repository/event; webhooks always fan out.
         if (NotificationPreferencePolicy.ShouldSendEmail(db, owner.Id, repository.Id, emailEvent))
         {
-            Enqueue(db, owner.Id, owner.Email, subject, body);
+            Enqueue(db, owner.Id, repository.Id, owner.Email, subject, body);
         }
 
         // Operator members are copied on incident emails (theirs via their own preferences);
@@ -54,7 +54,7 @@ public static class FailureReporter
         {
             if (NotificationPreferencePolicy.ShouldSendEmail(db, member.Id, repository.Id, emailEvent))
             {
-                Enqueue(db, member.Id, member.Email, subject, body);
+                Enqueue(db, member.Id, repository.Id, member.Email, subject, body);
             }
         }
 
@@ -86,8 +86,9 @@ public static class FailureReporter
         }
     }
 
-    private static void Enqueue(DevSupDbContext db, Guid userId, string to, string subject, string body)
+    private static void Enqueue(DevSupDbContext db, Guid userId, Guid repositoryId, string to, string subject, string body)
     {
+        var now = DateTimeOffset.UtcNow;
         db.EmailMessages.Add(new EmailMessage
         {
             Id = Guid.NewGuid(),
@@ -95,7 +96,8 @@ public static class FailureReporter
             To = to,
             Subject = subject,
             HtmlBody = body,
-            CreatedAt = DateTimeOffset.UtcNow
+            NotBefore = NotificationPreferencePolicy.QuietHoursEndUtc(db, userId, repositoryId, now),
+            CreatedAt = now
         });
     }
 }

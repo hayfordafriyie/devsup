@@ -660,9 +660,14 @@
                 return '<label><input type="checkbox" data-repo="' + repo.id + '" data-event="' + e.event + '"' +
                     checked + "> " + e.label + "</label>";
             }).join("");
+            var qhStart = pref && pref.quietHoursStart != null ? pref.quietHoursStart : "";
+            var qhEnd = pref && pref.quietHoursEnd != null ? pref.quietHoursEnd : "";
+            var quiet = '<label class="pref-quiet">Quiet hours (UTC): ' +
+                '<input type="number" min="0" max="23" data-repo="' + repo.id + '" data-field="quietHoursStart" value="' + qhStart + '" placeholder="start" />' +
+                '<input type="number" min="0" max="23" data-repo="' + repo.id + '" data-field="quietHoursEnd" value="' + qhEnd + '" placeholder="end" /></label>';
             return '<div class="pref-repo">' +
                 '<div class="pref-title"><strong>' + escapeHtml(repoName(repo.cloneUrl)) + "</strong> <span class=\"muted\">" + escapeHtml(repo.cloneUrl) + "</span></div>" +
-                '<div class="pref-controls">' + master + events + "</div>" +
+                '<div class="pref-controls">' + master + events + quiet + "</div>" +
                 "</div>";
         }).join("");
     }
@@ -682,10 +687,20 @@
             container.querySelectorAll('[data-event]:checked'),
             function (box) { return box.getAttribute("data-event"); }
         );
+        var startInput = container.querySelector('[data-field="quietHoursStart"]');
+        var endInput = container.querySelector('[data-field="quietHoursEnd"]');
+        var quietHoursStart = startInput && startInput.value !== "" ? parseInt(startInput.value, 10) : null;
+        var quietHoursEnd = endInput && endInput.value !== "" ? parseInt(endInput.value, 10) : null;
         return fetch("/api/notification-preferences", {
             method: "PUT",
             headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-            body: JSON.stringify({ repositoryId: repoId, emailEnabled: master.checked, mutedEvents: mutedEvents })
+            body: JSON.stringify({
+                repositoryId: repoId,
+                emailEnabled: master.checked,
+                mutedEvents: mutedEvents,
+                quietHoursStart: quietHoursStart,
+                quietHoursEnd: quietHoursEnd
+            })
         }).then(function (response) {
             if (!response.ok) throw new Error("Failed to save notification preferences");
         });

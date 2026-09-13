@@ -331,6 +331,7 @@ public sealed class RepairProcessor(
         // The owner may have muted email for this repository/event; webhooks always fan out.
         if (NotificationPreferencePolicy.ShouldSendEmail(db, owner.Id, repository.Id, webhookEvent))
         {
+            var ownerNow = DateTimeOffset.UtcNow;
             db.EmailMessages.Add(new EmailMessage
             {
                 Id = Guid.NewGuid(),
@@ -338,7 +339,8 @@ public sealed class RepairProcessor(
                 To = owner.Email,
                 Subject = subject,
                 HtmlBody = body,
-                CreatedAt = DateTimeOffset.UtcNow
+                NotBefore = NotificationPreferencePolicy.QuietHoursEndUtc(db, owner.Id, repository.Id, ownerNow),
+                CreatedAt = ownerNow
             });
         }
 
@@ -357,6 +359,7 @@ public sealed class RepairProcessor(
             {
                 if (NotificationPreferencePolicy.ShouldSendEmail(db, member.Id, repository.Id, webhookEvent))
                 {
+                    var memberNow = DateTimeOffset.UtcNow;
                     db.EmailMessages.Add(new EmailMessage
                     {
                         Id = Guid.NewGuid(),
@@ -364,7 +367,8 @@ public sealed class RepairProcessor(
                         To = member.Email,
                         Subject = subject,
                         HtmlBody = body,
-                        CreatedAt = DateTimeOffset.UtcNow
+                        NotBefore = NotificationPreferencePolicy.QuietHoursEndUtc(db, member.Id, repository.Id, memberNow),
+                        CreatedAt = memberNow
                     });
                 }
             }

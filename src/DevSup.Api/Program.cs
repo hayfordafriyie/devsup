@@ -2293,7 +2293,7 @@ app.MapGet("/api/notification-preferences", async (ClaimsPrincipal user, DevSupD
     var rows = await (from p in db.NotificationPreferences.AsNoTracking()
                       join r in db.ConnectedRepositories.AsNoTracking() on p.RepositoryId equals r.Id
                       where p.UserId == ownerId
-                      select new { p.RepositoryId, r.CloneUrl, p.EmailEnabled, p.MutedEmailEvents, p.UpdatedAt })
+                      select new { p.RepositoryId, r.CloneUrl, p.EmailEnabled, p.MutedEmailEvents, p.QuietHoursStart, p.QuietHoursEnd, p.UpdatedAt })
         .ToListAsync(ct);
 
     var result = rows.Select(row => new NotificationPreferenceResponse(
@@ -2301,7 +2301,9 @@ app.MapGet("/api/notification-preferences", async (ClaimsPrincipal user, DevSupD
             row.CloneUrl,
             row.EmailEnabled,
             Enumerable.Range(0, 8).Where(i => (row.MutedEmailEvents & (1 << i)) != 0).Select(i => ((WebhookEvent)i).ToString()).ToList(),
-            row.UpdatedAt))
+            row.UpdatedAt,
+            row.QuietHoursStart,
+            row.QuietHoursEnd))
         .ToList();
     return Results.Ok(result);
 }).RequireAuthorization();
@@ -2330,6 +2332,15 @@ app.MapPut("/api/notification-preferences", async (NotificationPreferenceRequest
         }
     }
 
+    if (request.QuietHoursStart is < 0 or > 23 || request.QuietHoursEnd is < 0 or > 23)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Quiet hours must be an hour between 0 and 23.");
+    }
+    if ((request.QuietHoursStart is null) != (request.QuietHoursEnd is null))
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Quiet hours need both a start and an end hour.");
+    }
+
     var now = DateTimeOffset.UtcNow;
     var existing = await db.NotificationPreferences
         .FirstOrDefaultAsync(p => p.UserId == ownerId && p.RepositoryId == request.RepositoryId, ct);
@@ -2342,6 +2353,8 @@ app.MapPut("/api/notification-preferences", async (NotificationPreferenceRequest
             RepositoryId = request.RepositoryId,
             EmailEnabled = request.EmailEnabled ?? true,
             MutedEmailEvents = muted,
+            QuietHoursStart = request.QuietHoursStart,
+            QuietHoursEnd = request.QuietHoursEnd,
             UpdatedAt = now
         };
         db.NotificationPreferences.Add(existing);
@@ -2350,6 +2363,8 @@ app.MapPut("/api/notification-preferences", async (NotificationPreferenceRequest
     {
         db.Entry(existing).Property(p => p.EmailEnabled).CurrentValue = request.EmailEnabled ?? existing.EmailEnabled;
         db.Entry(existing).Property(p => p.MutedEmailEvents).CurrentValue = muted;
+        db.Entry(existing).Property(p => p.QuietHoursStart).CurrentValue = request.QuietHoursStart;
+        db.Entry(existing).Property(p => p.QuietHoursEnd).CurrentValue = request.QuietHoursEnd;
         db.Entry(existing).Property(p => p.UpdatedAt).CurrentValue = now;
     }
     await db.SaveChangesAsync(ct);
@@ -2357,7 +2372,8 @@ app.MapPut("/api/notification-preferences", async (NotificationPreferenceRequest
     var repo = await db.ConnectedRepositories.AsNoTracking().SingleAsync(r => r.Id == request.RepositoryId, ct);
     var mutedList = Enumerable.Range(0, 8).Where(i => (existing.MutedEmailEvents & (1 << i)) != 0)
         .Select(i => ((WebhookEvent)i).ToString()).ToList();
-    return Results.Ok(new NotificationPreferenceResponse(existing.RepositoryId, repo.CloneUrl, existing.EmailEnabled, mutedList, existing.UpdatedAt));
+    return Results.Ok(new NotificationPreferenceResponse(existing.RepositoryId, repo.CloneUrl, existing.EmailEnabled, mutedList, existing.UpdatedAt,
+        existing.QuietHoursStart, existing.QuietHoursEnd));
 }).RequireAuthorization();
 
 app.MapGet("/api/notification-preferences/export", async (ClaimsPrincipal user, DevSupDbContext db, CancellationToken ct) =>
@@ -2367,11 +2383,11 @@ app.MapGet("/api/notification-preferences/export", async (ClaimsPrincipal user, 
                       join r in db.ConnectedRepositories.AsNoTracking() on p.RepositoryId equals r.Id
                       where p.UserId == ownerId
                       orderby r.CloneUrl
-                      select new { p.RepositoryId, r.CloneUrl, p.EmailEnabled, p.MutedEmailEvents })
+                      select new { p.RepositoryId, r.CloneUrl, p.EmailEnabled, p.MutedEmailEvents, p.QuietHoursStart, p.QuietHoursEnd })
         .ToListAsync(ct);
 
     var csv = new StringBuilder();
-    csv.AppendLine("repositoryId,cloneUrl,emailEnabled,mutedEvents");
+    csv.AppendLine("repositoryId,cloneUrl,emailEnabled,mutedEvents,quietHoursStart,quietHoursEnd");
     foreach (var row in rows)
     {
         var muted = string.Join(';', Enumerable.Range(0, 8)
@@ -2380,7 +2396,9 @@ app.MapGet("/api/notification-preferences/export", async (ClaimsPrincipal user, 
         csv.Append(CsvEscape(row.RepositoryId.ToString())).Append(',');
         csv.Append(CsvEscape(row.CloneUrl)).Append(',');
         csv.Append(row.EmailEnabled ? "true" : "false").Append(',');
-        csv.AppendLine(CsvEscape(muted));
+        csv.Append(CsvEscape(muted)).Append(',');
+        csv.Append(row.QuietHoursStart?.ToString() ?? "").Append(',');
+        csv.AppendLine(row.QuietHoursEnd?.ToString() ?? "");
     }
 
     var bytes = Encoding.UTF8.GetBytes(csv.ToString());
@@ -2474,6 +2492,35 @@ app.MapPost("/api/notification-preferences/import", async (HttpRequest httpReque
             continue;
         }
 
+        int? quietStart = null;
+        int? quietEnd = null;
+        if (row.Length > 4 && !string.IsNullOrWhiteSpace(row[4]))
+        {
+            if (!int.TryParse(row[4].Trim(), out var parsedStart) || parsedStart is < 0 or > 23)
+            {
+                skipped++;
+                errors.Add($"Line {line}: invalid quietHoursStart '{row[4].Trim()}'.");
+                continue;
+            }
+            quietStart = parsedStart;
+        }
+        if (row.Length > 5 && !string.IsNullOrWhiteSpace(row[5]))
+        {
+            if (!int.TryParse(row[5].Trim(), out var parsedEnd) || parsedEnd is < 0 or > 23)
+            {
+                skipped++;
+                errors.Add($"Line {line}: invalid quietHoursEnd '{row[5].Trim()}'.");
+                continue;
+            }
+            quietEnd = parsedEnd;
+        }
+        if ((quietStart is null) != (quietEnd is null))
+        {
+            skipped++;
+            errors.Add($"Line {line}: quiet hours need both start and end.");
+            continue;
+        }
+
         var now = DateTimeOffset.UtcNow;
         var preference = existing.FirstOrDefault(p => p.RepositoryId == repositoryId);
         if (preference is null)
@@ -2485,6 +2532,8 @@ app.MapPost("/api/notification-preferences/import", async (HttpRequest httpReque
                 RepositoryId = repositoryId,
                 EmailEnabled = emailEnabled,
                 MutedEmailEvents = muted,
+                QuietHoursStart = quietStart,
+                QuietHoursEnd = quietEnd,
                 UpdatedAt = now
             };
             db.NotificationPreferences.Add(preference);
@@ -2494,6 +2543,8 @@ app.MapPost("/api/notification-preferences/import", async (HttpRequest httpReque
         {
             db.Entry(preference).Property(p => p.EmailEnabled).CurrentValue = emailEnabled;
             db.Entry(preference).Property(p => p.MutedEmailEvents).CurrentValue = muted;
+            db.Entry(preference).Property(p => p.QuietHoursStart).CurrentValue = quietStart;
+            db.Entry(preference).Property(p => p.QuietHoursEnd).CurrentValue = quietEnd;
             db.Entry(preference).Property(p => p.UpdatedAt).CurrentValue = now;
         }
         updated++;

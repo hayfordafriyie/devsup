@@ -1,6 +1,7 @@
 using DevSup.Core;
 using DevSup.Core.Models;
 using DevSup.Infrastructure.HealthChecks;
+using DevSup.Infrastructure.Notifications;
 using DevSup.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -72,6 +73,7 @@ public sealed class VerificationProcessor(DevSupDbContext db, IAppUrlProber prob
                 HtmlBody = $"<p>DevSup re-checked {repoName} and it now responds healthily.</p>" +
                            $"<p>The fix for <code>{candidate.Failure.Method} {candidate.Failure.Path}</code> " +
                            $"(HTTP {candidate.Failure.StatusCode}) is <strong>verified</strong>.</p>",
+                NotBefore = NotificationPreferencePolicy.QuietHoursEndUtc(db, owner.Id, candidate.Repository.Id, now),
                 CreatedAt = now
             });
 

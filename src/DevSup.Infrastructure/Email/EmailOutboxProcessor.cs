@@ -18,8 +18,9 @@ public sealed class EmailOutboxProcessor(
 {
     public async Task<int> ProcessPendingAsync(int batchSize, CancellationToken ct)
     {
+        var now = DateTimeOffset.UtcNow;
         var pending = await db.EmailMessages
-            .Where(m => !m.Sent && m.Attempts < maxAttempts)
+            .Where(m => !m.Sent && m.Attempts < maxAttempts && (m.NotBefore == null || m.NotBefore <= now))
             .OrderBy(m => m.CreatedAt)
             .Take(batchSize)
             .ToListAsync(ct);

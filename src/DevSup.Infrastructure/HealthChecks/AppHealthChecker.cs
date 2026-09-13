@@ -2,6 +2,7 @@ using DevSup.Core;
 using DevSup.Core.Models;
 using DevSup.Core.Services;
 using DevSup.Infrastructure.Email;
+using DevSup.Infrastructure.Notifications;
 using DevSup.Infrastructure.Persistence;
 using DevSup.Infrastructure.Webhooks;
 using Microsoft.EntityFrameworkCore;
@@ -112,6 +113,7 @@ public sealed class AppHealthChecker(
                   $"and was classified as <em>not a code error</em>, so no repair is scheduled.</p>"
                 : $"<p>The health check for <code>{repository.AppUrl}</code> returned <strong>{result.Error}</strong>.</p>" +
                   $"<p>A ticket has been created and the repair agent will investigate.</p>",
+            NotBefore = NotificationPreferencePolicy.QuietHoursEndUtc(db, owner.Id, repository.Id, now),
             CreatedAt = now
         });
 

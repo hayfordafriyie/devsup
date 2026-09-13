@@ -184,6 +184,8 @@ public sealed class DashboardTests : IAsyncLifetime
         Assert.Contains("importPreferences", js);
         Assert.Contains("\"/api/notification-preferences/export\"", js);
         Assert.Contains("\"/api/notification-preferences/import\"", js);
+        Assert.Contains("quietHoursStart", js);
+        Assert.Contains("quietHoursEnd", js);
         Assert.Contains("repo-bulk-bar", html2);
         Assert.Contains("data-bulk-action", js);
         Assert.Contains("repo-select", js);

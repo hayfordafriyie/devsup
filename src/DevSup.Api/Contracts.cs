@@ -238,14 +238,18 @@ public sealed record NotificationPreferenceImportResult(int Updated, int Skipped
 public sealed record NotificationPreferenceRequest(
     Guid RepositoryId,
     bool? EmailEnabled = null,
-    List<string>? MutedEvents = null);
+    List<string>? MutedEvents = null,
+    int? QuietHoursStart = null,
+    int? QuietHoursEnd = null);
 
 public sealed record NotificationPreferenceResponse(
     Guid RepositoryId,
     string CloneUrl,
     bool EmailEnabled,
     List<string> MutedEvents,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    int? QuietHoursStart = null,
+    int? QuietHoursEnd = null);
 
 public sealed record EmailMessageResponse(
     Guid Id,

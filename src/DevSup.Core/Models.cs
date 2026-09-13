@@ -138,6 +138,10 @@ public sealed record EmailMessage
 
     /// <summary>Last delivery error, kept for diagnostics.</summary>
     public string? LastError { get; init; }
+
+    /// <summary>When set, the outbox worker holds this message until this UTC instant (e.g. quiet hours).</summary>
+    public DateTimeOffset? NotBefore { get; init; }
+
     public DateTimeOffset CreatedAt { get; init; }
 }
 
@@ -218,6 +222,13 @@ public sealed record NotificationPreference
 
     /// <summary>Bitmask of <see cref="WebhookEvent"/> muted for email; 0 means all allowed.</summary>
     public int MutedEmailEvents { get; init; }
+
+    /// <summary>Quiet-hours window start (UTC hour 0-23); null disables quiet hours. May wrap midnight.</summary>
+    public int? QuietHoursStart { get; init; }
+
+    /// <summary>Quiet-hours window end (UTC hour 0-23); emails are held until this hour.</summary>
+    public int? QuietHoursEnd { get; init; }
+
     public DateTimeOffset UpdatedAt { get; init; }
 }
 
