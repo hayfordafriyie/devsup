@@ -36,6 +36,7 @@ public sealed class DevSupDbContext(DbContextOptions<DevSupDbContext> options)
             entity.Property(u => u.IsAdmin).HasDefaultValue(false);
             entity.Property(u => u.Active).HasDefaultValue(true);
             entity.Property(u => u.DigestFrequency).HasConversion<int>();
+            entity.Property(u => u.DigestUnsubscribeToken).HasMaxLength(128);
         });
 
         modelBuilder.Entity<ConnectedRepository>(entity =>

@@ -11,6 +11,9 @@ public sealed class DigestOptions
     public bool Enabled { get; init; } = true;
     public int IntervalHours { get; init; } = 24;
     public int MaxOpenTickets { get; init; } = 10;
+
+    /// <summary>Absolute base URL of the platform, used to build one-click unsubscribe links.</summary>
+    public string BaseUrl { get; init; } = "http://localhost:5000";
 }
 
 /// <summary>
@@ -87,13 +90,21 @@ public sealed class DigestProcessor(
                 continue;
             }
 
+            var unsubscribeToken = user.DigestUnsubscribeToken;
+            if (string.IsNullOrEmpty(unsubscribeToken))
+            {
+                unsubscribeToken = GenerateToken();
+                db.Entry(user).Property(u => u.DigestUnsubscribeToken).CurrentValue = unsubscribeToken;
+            }
+            var unsubscribeUrl = $"{options.BaseUrl.TrimEnd('/')}/api/digest/unsubscribe?token={Uri.EscapeDataString(unsubscribeToken)}";
+
             db.EmailMessages.Add(new EmailMessage
             {
                 Id = Guid.NewGuid(),
                 UserId = user.Id,
                 To = user.Email,
                 Subject = $"DevSup daily summary: {all.Failures} failure(s), {all.Open} open ticket(s), {all.Fixed} fix(es)",
-                HtmlBody = BuildDigest(user, ownedIds.Count, sharedIds.Count, all, owned, shared, open, cadenceHours),
+                HtmlBody = BuildDigest(user, ownedIds.Count, sharedIds.Count, all, owned, shared, open, cadenceHours, unsubscribeUrl),
                 CreatedAt = now
             });
             db.Entry(user).Property(u => u.LastDigestSentAt).CurrentValue = now;
@@ -108,7 +119,7 @@ public sealed class DigestProcessor(
         return generated;
     }
 
-    private string BuildDigest(User user, int ownedCount, int sharedCount, DigestCounts all, DigestCounts owned, DigestCounts shared, List<RepairTicket> open, int windowHours)
+    private string BuildDigest(User user, int ownedCount, int sharedCount, DigestCounts all, DigestCounts owned, DigestCounts shared, List<RepairTicket> open, int windowHours, string unsubscribeUrl)
     {
         var sb = new StringBuilder();
         sb.Append("<h3>DevSup daily summary</h3>");
@@ -148,9 +159,16 @@ public sealed class DigestProcessor(
             sb.Append("</ul>");
         }
 
-        sb.Append("<p style=\"color: #888\">Automated summary · <em>DevSup</em></p>");
+        sb.Append("<p style=\"color: #888\">Automated summary · <em>DevSup</em> · " +
+                  $"<a href=\"{Escape(unsubscribeUrl)}\">Unsubscribe from digests</a></p>");
         return sb.ToString();
     }
+
+    private static string GenerateToken()
+        => Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
 
     private static string CountsList(DigestCounts counts)
         => "<ul>" +

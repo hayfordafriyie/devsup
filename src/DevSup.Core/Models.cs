@@ -26,6 +26,9 @@ public sealed record User
     /// <summary>When the last digest was enqueued for this user; used to honour the cadence.</summary>
     public DateTimeOffset? LastDigestSentAt { get; init; }
 
+    /// <summary>Opaque one-click unsubscribe token embedded in digest emails; null once used or before the first digest.</summary>
+    public string? DigestUnsubscribeToken { get; init; }
+
     public DateTimeOffset CreatedAt { get; init; }
 }
 

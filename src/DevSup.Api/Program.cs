@@ -72,7 +72,8 @@ var digestOptions = new DigestOptions
 {
     Enabled = !string.Equals(builder.Configuration["Digests:Enabled"], "false", StringComparison.OrdinalIgnoreCase),
     IntervalHours = int.TryParse(builder.Configuration["Digests:IntervalHours"], out var digestHours) && digestHours >= 1 ? digestHours : 24,
-    MaxOpenTickets = int.TryParse(builder.Configuration["Digests:MaxOpenTickets"], out var digestMax) && digestMax >= 1 ? digestMax : 10
+    MaxOpenTickets = int.TryParse(builder.Configuration["Digests:MaxOpenTickets"], out var digestMax) && digestMax >= 1 ? digestMax : 10,
+    BaseUrl = builder.Configuration["Digests:BaseUrl"] is { Length: > 0 } digestBaseUrl ? digestBaseUrl : "http://localhost:5000"
 };
 builder.Services.AddSingleton(digestOptions);
 builder.Services.AddScoped<DigestProcessor>();
@@ -397,6 +398,33 @@ app.MapPost("/api/account/password", async (ChangePasswordRequest request, Claim
 
     return Results.NoContent();
 }).RequireAuthorization();
+
+app.MapGet("/api/digest/unsubscribe", async (string? token, DevSupDbContext db, AuditRecorder audit, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(token))
+    {
+        return Results.BadRequest("A token is required.");
+    }
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.DigestUnsubscribeToken == token, ct);
+    if (user is null)
+    {
+        return Results.NotFound("This unsubscribe link is invalid or has already been used.");
+    }
+
+    db.Entry(user).Property(u => u.DigestEnabled).CurrentValue = false;
+    db.Entry(user).Property(u => u.DigestUnsubscribeToken).CurrentValue = null;
+    await db.SaveChangesAsync(ct);
+    await audit.RecordAsync(user.Id, user.Email, "account.digestUnsubscribe", "User", user.Id.ToString(), ct: ct);
+
+    return Results.Content(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Unsubscribed</title></head><body>" +
+        "<h1>You're unsubscribed</h1>" +
+        "<p>DevSup will no longer send you digest emails. Transactional incident emails are unaffected, " +
+        "and you can re-enable digests anytime from your account settings.</p>" +
+        "</body></html>",
+        "text/html");
+});
 
 const string OAuthStateCookie = "devsup_oauth_state";
 
