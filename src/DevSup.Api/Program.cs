@@ -7,6 +7,7 @@ using DevSup.Agent.PullRequests;
 using DevSup.Agent.Repair;
 using DevSup.Api;
 using DevSup.Api.Auth;
+using DevSup.Api.Infra;
 using DevSup.Api.Notifications;
 using DevSup.Core;
 using DevSup.Core.Models;
@@ -26,8 +27,9 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("DevSup")
     ?? "Data Source=devsup.db";
 
+var databaseProvider = builder.Configuration["Database:Provider"];
 builder.Services.AddDbContext<DevSupDbContext>(options =>
-    options.UseSqlite(connectionString));
+    DatabaseOptions.UseProvider(options, databaseProvider, connectionString));
 
 var jwtSettings = new JwtSettings
 {
